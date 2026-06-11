@@ -8,14 +8,65 @@
 - JSON / CSV 双格式输出
 - 详情页 JD 抓取 + 技能分析
 - 增量写入（异常退出不丢数据）
-- 一键环境检查 + Chrome CDP 启动
+- 一键环境检查 + Chrome CDP 启动（含软链接方案）
 - 多维筛选（规模、融资、薪资、经验、学历、行业）
 - macOS + Linux 支持
 
-## 快速开始
+## 安装
+
+### 方式 1：克隆到本地再安装（推荐）
+
+由于 `hermes skills install` 的网络请求在某些环境下可能无法直接访问 GitHub，推荐先克隆仓库再本地安装：
 
 ```bash
-# 1. 安装依赖
+# 1. 克隆仓库
+git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
+cd boss-zhipin-scraper
+
+# 2. 复制到 Hermes skills 目录
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
+cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
+cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+```
+
+### 方式 2：curl 一键安装
+
+不需要克隆整个仓库，直接下载必要文件：
+
+```bash
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+```
+
+### 方式 3：hermes skills install（需网络直连 GitHub）
+
+```bash
+hermes skills install https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md --category data-science
+```
+
+> 注意：此方式依赖 hermes 进程能直接访问 GitHub，如果遇到超时或连接失败，请使用方式 1 或 2。
+
+### 验证安装
+
+```bash
+# 检查文件是否存在
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+```
+
+安装后直接在 Hermes 对话中说"帮我搜一下 BOSS直聘 上上海的 AI Agent 岗位"。
+
+## 作为命令行工具使用
+
+不想装成 Skill 也可以直接当 CLI 用：
+
+```bash
+# 1. 克隆 + 安装依赖
+git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
+cd boss-zhipin-scraper
 pip install -r requirements.txt
 
 # 2. 启动 Chrome CDP
@@ -29,18 +80,6 @@ python3 scripts/boss_cdp_raw.py --check
 python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
 ```
 
-## 作为 Hermes Skill 安装
-
-```bash
-# 从本地
-hermes skills install /path/to/boss-zhipin-scraper
-
-# 从 GitHub
-hermes skills install https://github.com/<user>/boss-zhipin-scraper/SKILL.md
-```
-
-安装后直接在 Hermes 对话中说"帮我搜一下 BOSS直聘 上上海的 AI Agent 岗位"。
-
 ## 参数
 
 | 参数 | 说明 |
@@ -51,9 +90,9 @@ hermes skills install https://github.com/<user>/boss-zhipin-scraper/SKILL.md
 | `--format` | json / csv |
 | `--detail` | 抓取详情页 |
 | `--analysis` | 分析报告 |
-| `--merge FILE` | 合并已有数据 |
-| `--check` | 环境检查 |
-| `--setup-chrome` | 启动 Chrome CDP |
+| `--merge FILE` | 合并已有数据（按 job_id 去重） |
+| `--check` | 环境检查（CDP + 依赖 + 登录态） |
+| `--setup-chrome` | 一键启动 Chrome CDP（含软链接方案） |
 | `--cdp-port` | CDP 端口（默认 9222） |
 | `--scale/--salary/--experience/--degree` | 筛选条件 |
 
@@ -70,6 +109,13 @@ boss-zhipin-scraper/
 │   └── boss_cdp_raw.py   # 主力脚本
 └── requirements.txt
 ```
+
+## 工作原理
+
+1. 通过 Chrome DevTools Protocol (CDP) 连接到已打开的 Chrome
+2. 在 BOSS直聘页面内注入 JS，用同步 XHR 调用搜索 API
+3. API 返回明文 `salaryDesc`，绕过前端字体反爬
+4. 每页抓完立即写入文件，按 `job_id` 去重
 
 ## License
 
