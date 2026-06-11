@@ -197,3 +197,25 @@ rm /tmp/chrome-cdp-profile
 - 翻页间隔 12-22 秒随机延迟，3 页约 1 分钟
 - 详情页每条 10-25 秒，10 条约 3-5 分钟
 - BOSS直聘可能更新 API 路径，失效时需更新脚本中 `API_JOB_LIST_PATH` 常量
+
+## 安装本 Skill
+
+本 Skill 需手动安装到 Hermes skills 目录（`hermes skills install` 因网络问题可能失败）：
+
+```bash
+# 推荐：curl 一键安装
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+```
+
+或克隆后手动复制：
+
+```bash
+git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
+cp boss-zhipin-scraper/SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
+cp boss-zhipin-scraper/scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+```
