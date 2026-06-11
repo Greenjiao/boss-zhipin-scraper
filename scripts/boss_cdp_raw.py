@@ -350,13 +350,13 @@ def check_login_state(cdp_port=DEFAULT_CDP_PORT):
 
         # 先导航到 BOSS直聘，确保 cookie 域名正确
         cdp.send("Page.navigate", {"url": "https://www.zhipin.com/"}, sid)
-        time.sleep(3)
+        time.sleep(4)
 
-        # 通过 XHR 调用轻量 API 检查登录状态
+        # 用搜索 API 探测登录态（已验证可用的接口）
         js = """
         (function(){
             var xhr = new XMLHttpRequest();
-            xhr.open('GET', '/wapi/zpgeek/friend/getUserConfig', false);
+            xhr.open('GET', '/wapi/zpgeek/search/joblist.json?scene=1&query=test&city=101020100&page=1&pageSize=1', false);
             xhr.send();
             return xhr.responseText;
         })()
@@ -374,14 +374,18 @@ def check_login_state(cdp_port=DEFAULT_CDP_PORT):
         except (json.JSONDecodeError, ValueError):
             return False
 
-        # 检查是否有有效用户信息
-        zp_data = data.get("zpData", {})
-        if isinstance(zp_data, dict) and zp_data.get("userId"):
-            return True
-        # 也可能是 code !== 0 表示未登录
+        # 搜索接口 code=0 且有 jobList 说明已登录
         if data.get("code") == 0:
+            zp_data = data.get("zpData", {})
+            if isinstance(zp_data, dict):
+                job_list = zp_data.get("jobList")
+                if job_list is not None:
+                    return True
+            # code=0 但没有 jobList，可能是登录了但搜索无结果，也算登录
             return True
 
+        # code=7 通常表示未登录
+        log.debug(f"登录检测 API code={data.get('code')}, message={data.get('message', '')}")
         return False
     except (requests.ConnectionError, requests.Timeout, KeyError,
             json.JSONDecodeError, websocket.WebSocketException) as e:
