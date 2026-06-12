@@ -32,6 +32,7 @@ import hashlib
 import csv
 import platform
 import subprocess
+import shutil
 import signal
 import logging
 from datetime import datetime
@@ -1084,24 +1085,43 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
     print("=" * 50)
     print()
 
-    symlink_path = "/tmp/chrome-cdp-profile"
+    cdp_data_dir = "/tmp/chrome-cdp-data"
 
-    # 1. 创建符号链接
-    if os.path.exists(symlink_path):
-        print(f"✅ 符号链接已存在: {symlink_path}")
-    else:
-        os.symlink(DEFAULT_PROFILE_DIR, symlink_path)
-        print(f"✅ 已创建符号链接: {symlink_path} -> {DEFAULT_PROFILE_DIR}")
+    # 1. 创建独立 CDP profile（复制 cookie 而非软链接）
+    print("准备 CDP profile...")
+    default_profile = DEFAULT_PROFILE_DIR
+    default_default = os.path.join(default_profile, "Default")
+    cdp_default = os.path.join(cdp_data_dir, "Default")
+
+    os.makedirs(cdp_default, exist_ok=True)
+
+    # 复制关键文件以保持登录态
+    copy_files = []
+    if os.path.isdir(default_default):
+        # Cookies + Local State = 登录态
+        copy_files.append((os.path.join(default_default, "Cookies"), os.path.join(cdp_default, "Cookies")))
+        copy_files.append((os.path.join(default_default, "Login Data"), os.path.join(cdp_default, "Login Data")))
+        copy_files.append((os.path.join(default_default, "Web Data"), os.path.join(cdp_default, "Web Data")))
+        copy_files.append((os.path.join(default_default, "Preferences"), os.path.join(cdp_default, "Preferences")))
+        copy_files.append((os.path.join(default_default, "Secure Preferences"), os.path.join(cdp_default, "Secure Preferences")))
+    local_state_src = os.path.join(default_profile, "Local State")
+    local_state_dst = os.path.join(cdp_data_dir, "Local State")
+    copy_files.append((local_state_src, local_state_dst))
+
+    copied = 0
+    for src, dst in copy_files:
+        if os.path.exists(src):
+            try:
+                shutil.copy2(src, dst)
+                copied += 1
+            except Exception as e:
+                print(f"  ⚠️  复制 {os.path.basename(src)} 失败: {e}")
+    print(f"✅ 已复制 {copied} 个 profile 文件到 {cdp_data_dir}")
+    print("   (不使用软链接，避免 Chrome 检测到默认 profile 拒绝 CDP)")
 
     # 2. 关闭已有 Chrome
     print("\n关闭已有 Chrome 进程...")
-    if platform.system() == "Darwin":
-        subprocess.run(
-            ["osascript", "-e", 'tell application "Google Chrome" to quit'],
-            capture_output=True, timeout=10,
-        )
-    else:
-        subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True, timeout=5)
+    subprocess.run(["killall", "-9", "Google Chrome"], capture_output=True, timeout=5)
     # 等待 Chrome 完全退出
     for i in range(15):
         time.sleep(1)
@@ -1121,10 +1141,7 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
             break
     else:
         print("⚠️  Chrome 未完全退出，强制终止...")
-        if platform.system() == "Darwin":
-            subprocess.run(["killall", "-9", "Google Chrome"], capture_output=True, timeout=5)
-        else:
-            subprocess.run(["pkill", "-9", "-f", "google-chrome"], capture_output=True, timeout=5)
+        subprocess.run(["killall", "-9", "Google Chrome"], capture_output=True, timeout=5)
         time.sleep(2)
     print("✅ 已关闭")
 
@@ -1133,18 +1150,13 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
     cmd = [
         DEFAULT_CHROME_PATH,
         f"--remote-debugging-port={cdp_port}",
-        f"--user-data-dir={symlink_path}",
+        f"--user-data-dir={cdp_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
     ]
     # 启动 Chrome（不阻塞）
-    if platform.system() == "Darwin":
-        # macOS: 直接用可执行路径启动（不通过 open -a，避免参数丢失）
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
-    else:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
 
     # 4. 等待 CDP 可用
     print("等待 CDP 可用", end="")
