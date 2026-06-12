@@ -8,7 +8,7 @@
 - JSON / CSV 双格式输出
 - 详情页 JD 抓取 + 技能分析
 - 增量写入（异常退出不丢数据）
-- 一键环境检查 + Chrome CDP 启动（含软链接方案）
+- 一键环境检查 + 持久隔离 Chrome CDP profile
 - 多维筛选（规模、融资、薪资、经验、学历、行业）
 - macOS + Linux 支持
 
@@ -71,7 +71,7 @@ pip install -r requirements.txt
 
 # 2. 启动 Chrome CDP
 python3 scripts/boss_cdp_raw.py --setup-chrome
-# 在浏览器中登录 zhipin.com
+# 首次使用也不会复制主 Chrome 登录态；请在弹出的 BOSS 专用浏览器中登录 zhipin.com
 
 # 3. 检查环境
 python3 scripts/boss_cdp_raw.py --check
@@ -93,7 +93,11 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --f
 | `--analysis` | 分析报告 |
 | `--merge FILE` | 合并已有数据（按 job_id 去重） |
 | `--check` | 环境检查（CDP + 依赖 + 登录态） |
-| `--setup-chrome` | 一键启动 Chrome CDP（含软链接方案） |
+| `--setup-chrome` | 一键启动 Chrome CDP（持久隔离 profile） |
+| `--copy-login-state` | 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile（默认、首次启动、重复启动都不复制） |
+| `--reset-chrome-profile` | 重建 BOSS 专用 Chrome profile，会清除此专用浏览器内的登录态 |
+| `--output` | 列表输出路径（默认 `~/.boss-zhipin-scraper/job-result/`） |
+| `--detail-output` | 详情输出路径（默认 `~/.boss-zhipin-scraper/job-result/`） |
 | `--cdp-port` | CDP 端口（默认 9222） |
 | `--scale/--salary/--experience/--degree` | 筛选条件 |
 
@@ -117,6 +121,30 @@ boss-zhipin-scraper/
 2. 在 BOSS直聘页面内注入 JS，用同步 XHR 调用搜索 API
 3. API 返回明文 `salaryDesc`，绕过前端字体反爬
 4. 每页抓完立即写入文件，按 `job_id` 去重
+
+## Chrome profile 安全策略
+
+`--setup-chrome` 默认使用持久隔离 profile，不软链接、不复制你的主 Chrome 数据。首次启动和后续重复启动都只是创建或复用这个专用 profile：
+
+- `~/.boss-zhipin-scraper/chrome-profile`
+
+未显式指定 `--output` 或 `--detail-output` 时，抓取结果默认保存到：
+
+- `~/.boss-zhipin-scraper/job-result`
+
+首次使用需要在这个专用 Chrome 中手动登录 BOSS直聘。登录态保存在专用 profile 内，重启机器后仍然保留；重复运行 `--setup-chrome` 不会清空它，也不会影响主 Chrome、Gmail、GitHub 等账号。
+
+如确实需要从主 Chrome 手动导入 BOSS 登录态，可以显式运行：
+
+```bash
+python3 scripts/boss_cdp_raw.py --setup-chrome --copy-login-state
+```
+
+`--copy-login-state` 每次运行都会覆盖隔离 profile 内对应的 Cookie 相关文件；日常启动不要加这个参数。它只复制 `Local State` 和 `Default/Cookies*`、`Default/Network/Cookies*` 这类 Cookie 数据库相关文件，不复制密码库、历史记录、扩展或完整 profile。需要清空专用浏览器登录态时使用：
+
+```bash
+python3 scripts/boss_cdp_raw.py --setup-chrome --reset-chrome-profile
+```
 
 ## License
 

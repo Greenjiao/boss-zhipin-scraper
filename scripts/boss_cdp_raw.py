@@ -39,12 +39,8 @@ from datetime import datetime
 from collections import Counter
 from urllib.parse import quote, urlencode
 
-try:
-    import websocket
-    import requests
-except ImportError:
-    print("需要: uv add websocket-client requests")
-    sys.exit(1)
+websocket = None
+requests = None
 
 # ============================================================
 # 全局常量
@@ -68,6 +64,9 @@ else:
     DEFAULT_CHROME_PATH = "/usr/bin/google-chrome"
     DEFAULT_PROFILE_DIR = os.path.expanduser("~/.config/google-chrome")
 
+DEFAULT_CDP_DATA_DIR = os.path.expanduser("~/.boss-zhipin-scraper/chrome-profile")
+DEFAULT_RESULT_DIR = os.path.expanduser("~/.boss-zhipin-scraper/job-result")
+
 # 全局请求计数器
 _request_counter = 0
 
@@ -77,6 +76,33 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("boss_cdp")
+
+
+def default_output_path(kind):
+    filename = f"boss_{kind}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+    return os.path.join(DEFAULT_RESULT_DIR, filename)
+
+
+def require_runtime_dependencies(*names):
+    global requests, websocket
+
+    missing = []
+    if "requests" in names and requests is None:
+        try:
+            import requests as requests_module
+            requests = requests_module
+        except ImportError:
+            missing.append("requests")
+    if "websocket" in names and websocket is None:
+        try:
+            import websocket as websocket_module
+            websocket = websocket_module
+        except ImportError:
+            missing.append("websocket-client")
+    if missing:
+        print(f"需要安装依赖: uv add {' '.join(missing)}")
+        return False
+    return True
 
 
 # ============================================================
@@ -146,6 +172,8 @@ def incr_request():
 # ============================================================
 class CDPSession:
     def __init__(self, cdp_port=DEFAULT_CDP_PORT):
+        if not require_runtime_dependencies("requests", "websocket"):
+            raise RuntimeError("缺少 CDP 运行依赖")
         self.cdp_port = cdp_port
         resp = requests.get(f"http://127.0.0.1:{cdp_port}/json/version", timeout=10)
         ws_url = resp.json()["webSocketDebuggerUrl"]
@@ -524,6 +552,8 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
     cdp = CDPSession(cdp_port)
     all_jobs = []
     seen = set()
+    if not output_path:
+        output_path = default_output_path("jobs")
 
     # 显示筛选条件
     filter_desc = []
@@ -683,8 +713,6 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
     print(f"完成: {len(all_jobs)} 条")
 
     if all_jobs:
-        if not output_path:
-            output_path = f"/tmp/boss/boss_jobs_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
         # 最终写入（含时间戳更新）
         flush_jobs(output_path, {
             "keyword": keyword,
@@ -713,6 +741,8 @@ def scrape_details(list_data, max_details=None, output_path=None,
     jobs = list_data.get("jobs", [])
     if max_details:
         jobs = jobs[:max_details]
+    if not output_path:
+        output_path = default_output_path("details")
 
     print(f"\n=== 抓取岗位详情 ({len(jobs)} 个) ===\n")
     results = []
@@ -809,8 +839,6 @@ def scrape_details(list_data, max_details=None, output_path=None,
         time.sleep(gap)
 
     # 最终保存
-    if not output_path:
-        output_path = f"/tmp/boss/boss_details_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
@@ -1023,47 +1051,53 @@ def run_check(cdp_port=DEFAULT_CDP_PORT):
 
     all_pass = True
 
-    # 检查 1: CDP 端口连通性
-    print("[1/3] CDP 端口连通性...")
-    try:
-        resp = requests.get(f"http://127.0.0.1:{cdp_port}/json/version", timeout=5)
-        data = resp.json()
-        browser = data.get("Browser", "未知")
-        print(f"  ✅ 通过 — Chrome {browser}")
-    except (requests.ConnectionError, requests.Timeout):
-        print(f"  ❌ 失败 — 无法连接 127.0.0.1:{cdp_port}")
-        print(f"     请先启动 Chrome CDP: python3 {__file__} --setup-chrome")
-        all_pass = False
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"  ❌ 失败 — CDP 响应异常: {e}")
-        all_pass = False
-
-    # 检查 2: Python 依赖
-    print("[2/3] Python 依赖...")
-    deps_ok = True
-    for mod_name in ["websocket", "requests"]:
-        try:
-            __import__(mod_name)
-            print(f"  ✅ {mod_name} 可导入")
-        except ImportError:
-            print(f"  ❌ {mod_name} 未安装 — 运行: uv add {mod_name}-client" if mod_name == "websocket" else f"  ❌ {mod_name} 未安装 — 运行: uv add {mod_name}")
-            deps_ok = False
-            all_pass = False
+    # 检查 1: Python 依赖
+    print("[1/3] Python 依赖...")
+    deps_ok = require_runtime_dependencies("websocket", "requests")
+    if requests is not None:
+        print(f"  ✅ requests 可导入")
+    if websocket is not None:
+        print(f"  ✅ websocket 可导入")
     if deps_ok:
         print(f"  ✅ 依赖完整")
+    else:
+        all_pass = False
+
+    # 检查 2: CDP 端口连通性
+    print("[2/3] CDP 端口连通性...")
+    if requests is None:
+        print(f"  ❌ 跳过 — 缺少 requests")
+        all_pass = False
+    else:
+        try:
+            resp = requests.get(f"http://127.0.0.1:{cdp_port}/json/version", timeout=5)
+            data = resp.json()
+            browser = data.get("Browser", "未知")
+            print(f"  ✅ 通过 — Chrome {browser}")
+        except (requests.ConnectionError, requests.Timeout):
+            print(f"  ❌ 失败 — 无法连接 127.0.0.1:{cdp_port}")
+            print(f"     请先启动 Chrome CDP: python3 {__file__} --setup-chrome")
+            all_pass = False
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"  ❌ 失败 — CDP 响应异常: {e}")
+            all_pass = False
 
     # 检查 3: BOSS直聘登录状态
     print("[3/3] BOSS直聘登录状态...")
-    try:
-        logged_in = check_login_state(cdp_port)
-        if logged_in:
-            print(f"  ✅ 已登录")
-        else:
-            print(f"  ❌ 未登录 — 请先在 Chrome 中登录 zhipin.com")
-            all_pass = False
-    except Exception as e:
-        print(f"  ❌ 检测失败: {e}")
+    if not deps_ok:
+        print(f"  ❌ 跳过 — 缺少运行依赖")
         all_pass = False
+    else:
+        try:
+            logged_in = check_login_state(cdp_port)
+            if logged_in:
+                print(f"  ✅ 已登录")
+            else:
+                print(f"  ❌ 未登录 — 请先在 Chrome 中登录 zhipin.com")
+                all_pass = False
+        except Exception as e:
+            print(f"  ❌ 检测失败: {e}")
+            all_pass = False
 
     print()
     if all_pass:
@@ -1078,86 +1112,176 @@ def run_check(cdp_port=DEFAULT_CDP_PORT):
 # ============================================================
 # --setup-chrome 自动启动
 # ============================================================
-def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
+def prepare_cdp_profile(copy_login_state=False, reset=False):
+    """Prepare an isolated persistent Chrome profile for CDP."""
+    cdp_data_dir = DEFAULT_CDP_DATA_DIR
+    cdp_default = os.path.join(cdp_data_dir, "Default")
+
+    if reset and os.path.exists(cdp_data_dir):
+        shutil.rmtree(cdp_data_dir)
+
+    os.makedirs(cdp_default, exist_ok=True)
+
+    copied = 0
+    if copy_login_state:
+        default_profile = DEFAULT_PROFILE_DIR
+        default_default = os.path.join(default_profile, "Default")
+        cookie_files = []
+        for rel_dir in ("", "Network"):
+            for name in ("Cookies", "Cookies-journal", "Cookies-wal", "Cookies-shm"):
+                rel_path = os.path.join(rel_dir, name) if rel_dir else name
+                cookie_files.append((os.path.join(default_default, rel_path), os.path.join(cdp_default, rel_path)))
+
+        copy_files = [(os.path.join(default_profile, "Local State"), os.path.join(cdp_data_dir, "Local State"))]
+        copy_files.extend(cookie_files)
+        for src, dst in copy_files:
+            if os.path.exists(src):
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    copied += 1
+                except Exception as e:
+                    print(f"  ⚠️  复制 {os.path.basename(src)} 失败: {e}")
+
+    return {
+        "path": cdp_data_dir,
+        "copied": copied,
+        "reset": reset,
+        "copy_login_state": copy_login_state,
+    }
+
+
+def is_cdp_ready(cdp_port):
+    try:
+        resp = requests.get(f"http://127.0.0.1:{cdp_port}/json/version", timeout=2)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def chrome_pids_for_user_data_dir(user_data_dir):
+    """Return Chrome PIDs using the given user-data-dir."""
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return []
+
+    pids = []
+    real_dir = os.path.realpath(user_data_dir)
+    for line in r.stdout.splitlines():
+        if "Google Chrome" not in line and "google-chrome" not in line and "chromium" not in line:
+            continue
+        if "--user-data-dir=" not in line:
+            continue
+        try:
+            pid_text, command = line.strip().split(None, 1)
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        match = re.search(r"--user-data-dir=(\"[^\"]+\"|'[^']+'|\S+)", command)
+        if not match:
+            continue
+        path = match.group(1).strip("\"'")
+        if os.path.realpath(path) == real_dir:
+            pids.append(pid)
+    return pids
+
+
+def chrome_user_data_dirs_for_cdp_port(cdp_port):
+    """Return user-data-dir paths for Chrome processes using the given CDP port."""
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return []
+
+    dirs = []
+    port_arg = f"--remote-debugging-port={cdp_port}"
+    for line in r.stdout.splitlines():
+        if port_arg not in line:
+            continue
+        if "Google Chrome" not in line and "google-chrome" not in line and "chromium" not in line:
+            continue
+        match = re.search(r"--user-data-dir=(\"[^\"]+\"|'[^']+'|\S+)", line)
+        if match:
+            dirs.append(match.group(1).strip("\"'"))
+    return dirs
+
+
+def cdp_port_uses_profile(cdp_port, cdp_data_dir):
+    expected = os.path.realpath(cdp_data_dir)
+    return any(os.path.realpath(path) == expected for path in chrome_user_data_dirs_for_cdp_port(cdp_port))
+
+
+def stop_cdp_chrome(cdp_data_dir):
+    """Stop only Chrome processes that use the scraper's isolated profile."""
+    pids = chrome_pids_for_user_data_dir(cdp_data_dir)
+    if not pids:
+        return 0
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for _ in range(10):
+        time.sleep(0.5)
+        if not chrome_pids_for_user_data_dir(cdp_data_dir):
+            return len(pids)
+
+    for pid in chrome_pids_for_user_data_dir(cdp_data_dir):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    time.sleep(0.5)
+    return len(pids)
+
+
+def wait_for_cdp(cdp_port, timeout=30):
+    print("等待 CDP 可用", end="")
+    for _ in range(timeout):
+        time.sleep(1)
+        print(".", end="", flush=True)
+        if is_cdp_ready(cdp_port):
+            print(f"\n✅ CDP 已就绪 (端口 {cdp_port})")
+            return True
+    print(f"\n❌ 等待超时 ({timeout}s)，CDP 未就绪")
+    print(f"   请手动检查 Chrome 是否启动，端口 {cdp_port} 是否开放")
+    return False
+
+
+def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False, reset_profile=False):
     """自动配置并启动 Chrome CDP 模式"""
+    if not require_runtime_dependencies("requests"):
+        return 1
+
     print("=" * 50)
     print("  设置 Chrome CDP 调试模式")
     print("=" * 50)
     print()
 
-    cdp_data_dir = "/tmp/chrome-cdp-data"
-
-    # 1. 创建独立 CDP profile（复制 cookie 而非软链接）
-    print("准备 CDP profile...")
-    default_profile = DEFAULT_PROFILE_DIR
-    default_default = os.path.join(default_profile, "Default")
-    cdp_default = os.path.join(cdp_data_dir, "Default")
-
-    os.makedirs(cdp_default, exist_ok=True)
-
-    # 只复制 Local State（Chrome 启动必需）+ Cookies（只保留 zhipin.com）
-    copied = 0
-    local_state_src = os.path.join(default_profile, "Local State")
-    local_state_dst = os.path.join(cdp_data_dir, "Local State")
-    if os.path.exists(local_state_src):
-        try:
-            shutil.copy2(local_state_src, local_state_dst)
-            copied += 1
-        except Exception as e:
-            print(f"  ⚠️  复制 Local State 失败: {e}")
-
-    cookies_src = os.path.join(default_default, "Cookies")
-    cookies_dst = os.path.join(cdp_default, "Cookies")
-    if os.path.exists(cookies_src):
-        try:
-            shutil.copy2(cookies_src, cookies_dst)
-            # 只保留 zhipin.com 相关 cookie，删除其他所有 cookie（保护用户隐私）
-            try:
-                import sqlite3
-                conn = sqlite3.connect(cookies_dst)
-                cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) FROM cookies WHERE host_key NOT LIKE '%zhipin%' AND host_key NOT LIKE '%boss%'")
-                removed = cur.fetchone()[0]
-                cur.execute("DELETE FROM cookies WHERE host_key NOT LIKE '%zhipin%' AND host_key NOT LIKE '%boss%'")
-                conn.commit()
-                conn.close()
-                print(f"  🍪 只保留 zhipin.com cookie（已删除 {removed} 条无关 cookie）")
-            except Exception as e:
-                print(f"  ⚠️  Cookie 过滤失败（不影响使用）: {e}")
-            copied += 1
-        except Exception as e:
-            print(f"  ⚠️  复制 Cookies 失败: {e}")
-
-    print(f"✅ 已复制 {copied} 个 profile 文件到 {cdp_data_dir}（仅含 BOSS直聘 cookie）")
-    print("   (不使用软链接，避免 Chrome 检测到默认 profile 拒绝 CDP)")
-
-    # 2. 关闭已有 Chrome
-    print("\n关闭已有 Chrome 进程...")
-    subprocess.run(["killall", "-9", "Google Chrome"], capture_output=True, timeout=5)
-    # 等待 Chrome 完全退出
-    for i in range(15):
-        time.sleep(1)
-        chrome_running = False
-        try:
-            if platform.system() == "Darwin":
-                r = subprocess.run(["pgrep", "-x", "Google Chrome"],
-                                   capture_output=True, timeout=5)
-                chrome_running = r.returncode == 0
-            else:
-                r = subprocess.run(["pgrep", "-f", "google-chrome"],
-                                   capture_output=True, timeout=5)
-                chrome_running = r.returncode == 0
-        except Exception:
-            pass
-        if not chrome_running:
-            break
+    profile = prepare_cdp_profile(copy_login_state=copy_login_state, reset=reset_profile)
+    cdp_data_dir = profile["path"]
+    print(f"✅ 使用独立 Chrome profile: {cdp_data_dir}")
+    if reset_profile:
+        print("   已按 --reset-chrome-profile 重建 profile")
+    if copy_login_state:
+        print(f"   已复制 {profile['copied']} 个登录态文件（Local State + Cookie 相关文件）")
     else:
-        print("⚠️  Chrome 未完全退出，强制终止...")
-        subprocess.run(["killall", "-9", "Google Chrome"], capture_output=True, timeout=5)
-        time.sleep(2)
-    print("✅ 已关闭")
+        print("   默认、首次启动、重复启动都不复制主 Chrome Cookie；首次使用请在此专用 Chrome 中登录 zhipin.com")
 
-    # 3. 启动 Chrome
+    if is_cdp_ready(cdp_port):
+        if cdp_port_uses_profile(cdp_port, cdp_data_dir):
+            print(f"\n✅ CDP 已就绪 (端口 {cdp_port})")
+            return 0
+        print(f"\n❌ 端口 {cdp_port} 已被其他 Chrome CDP profile 占用")
+        print(f"   请关闭旧 CDP Chrome，或改用 --cdp-port 指定其他端口")
+        return 1
+
+    stopped = stop_cdp_chrome(cdp_data_dir)
+    if stopped:
+        print(f"\n已关闭 {stopped} 个旧的 BOSS CDP Chrome 进程")
+
     print(f"\n启动 Chrome (CDP 端口: {cdp_port})...")
     cmd = [
         DEFAULT_CHROME_PATH,
@@ -1167,29 +1291,14 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
         "--no-default-browser-check",
         "--remote-allow-origins=*",
     ]
-    # 启动 Chrome（不阻塞）
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
 
-    # 4. 等待 CDP 可用
-    print("等待 CDP 可用", end="")
-    for i in range(30):
-        time.sleep(1)
-        print(".", end="", flush=True)
-        try:
-            resp = requests.get(f"http://127.0.0.1:{cdp_port}/json/version", timeout=2)
-            if resp.status_code == 200:
-                print(f"\n✅ CDP 已就绪 (端口 {cdp_port})")
-                break
-        except (requests.ConnectionError, requests.Timeout):
-            continue
-    else:
-        print(f"\n❌ 等待超时 (30s)，CDP 未就绪")
-        print(f"   请手动检查 Chrome 是否启动，端口 {cdp_port} 是否开放")
+    if not wait_for_cdp(cdp_port):
         return 1
 
     print()
-    print("Chrome 已启动。请在浏览器中登录 zhipin.com，然后运行抓取命令。")
+    print("Chrome 已启动。请在这个专用浏览器中登录 zhipin.com，然后运行抓取命令。")
     print()
     print(f"示例:")
     print(f"  uv run python3 scripts/boss_cdp_raw.py --keyword \"AI Agent\" --city 上海 --pages 3")
@@ -1273,6 +1382,10 @@ def main():
     p.add_argument("--check", action="store_true", help="运行环境诊断检查")
     p.add_argument("--setup-chrome", action="store_true",
                    help="自动启动 Chrome CDP 调试模式")
+    p.add_argument("--copy-login-state", action="store_true",
+                   help="手动从主 Chrome 导入 Local State + Cookie 相关文件到独立 profile（默认、首次启动、重复启动都不复制）")
+    p.add_argument("--reset-chrome-profile", action="store_true",
+                   help="重建 BOSS 专用 Chrome profile，会清除此专用浏览器内的登录态")
 
     args = p.parse_args()
 
@@ -1282,7 +1395,14 @@ def main():
 
     # --setup-chrome 模式
     if args.setup_chrome:
-        sys.exit(run_setup_chrome(args.cdp_port))
+        sys.exit(run_setup_chrome(
+            args.cdp_port,
+            copy_login_state=args.copy_login_state,
+            reset_profile=args.reset_chrome_profile,
+        ))
+
+    if not require_runtime_dependencies("requests", "websocket"):
+        sys.exit(1)
 
     # 页数限制
     if args.pages > MAX_PAGES:

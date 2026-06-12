@@ -4,7 +4,10 @@
 
 ### 新功能
 - `--check` 环境检查（CDP 连通性、依赖、登录态）
-- `--setup-chrome` 一键启动 Chrome CDP（软链接方案）
+- `--setup-chrome` 一键启动 Chrome CDP（持久隔离 profile）
+- `--copy-login-state` 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile
+- `--reset-chrome-profile` 重建 BOSS 专用 Chrome profile
+- 默认抓取结果保存到 `~/.boss-zhipin-scraper/job-result`
 - `--format csv` 导出 CSV 表格
 - `--merge` 合并多次抓取结果（去重）
 - `--cdp-port` 自定义 CDP 端口（默认 9222）
@@ -20,11 +23,11 @@
 - 清除所有 bare except，改为具体异常类型
 - API 路径提取为常量，方便维护
 - DOM fallback 标记为 deprecated
-- Linux 平台支持（Chrome 路径 + pkill）
+- Linux 平台支持（Chrome 路径 + 隔离 profile）
 - pyproject.toml 版本锁定依赖
 
 ### 安全
-- Chrome profile 软链接方案安全警告
+- 默认不软链接、不复制主 Chrome profile；首次启动也不自动导入主 Chrome 登录态，避免影响 Gmail/GitHub 等主浏览器登录态
 - API URL 可配置（`API_JOB_LIST_PATH` 常量）
 
 ## v1.0.0 (2026-06)

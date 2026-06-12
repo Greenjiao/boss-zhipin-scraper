@@ -72,12 +72,21 @@ python3 "$SCRIPT_PATH" --setup-chrome --cdp-port 9222
 ```
 
 这会自动完成：
-1. 创建 Chrome profile 软链接到 `/tmp/chrome-cdp-profile`（避免 profile 锁冲突，Chrome 不允许多进程同时访问同一 profile）
-2. 关闭现有 Chrome 实例
+1. 创建或复用持久隔离 Chrome profile
+   - `~/.boss-zhipin-scraper/chrome-profile`
+2. 只关闭使用该隔离 profile 的旧 BOSS CDP Chrome，不关闭用户主 Chrome
 3. 以 CDP 模式启动 Chrome（`--remote-debugging-port=9222`）
 4. 等待 CDP 端口就绪（最多 30 秒）
 
-**启动后告诉用户：请在 Chrome 浏览器中访问 zhipin.com 并登录，登录后告诉我。**
+默认不复制主 Chrome 的 Cookie、密码、历史记录或扩展；首次启动和后续重复启动都只是创建或复用该专用 profile。首次使用时告诉用户：请在弹出的 BOSS 专用 Chrome 浏览器中访问 zhipin.com 并登录，登录后告诉我。该专用 profile 是持久目录，机器重启后登录态仍保留，重复运行 `--setup-chrome` 不会清空它。
+
+仅当用户明确要求从主 Chrome 手动导入 BOSS 登录态时，可使用：
+
+```bash
+python3 "$SCRIPT_PATH" --setup-chrome --copy-login-state --cdp-port 9222
+```
+
+`--copy-login-state` 每次运行都会覆盖隔离 profile 内对应的 Cookie 相关文件；日常启动不要加这个参数。它只复制 `Local State` 和 `Default/Cookies*`、`Default/Network/Cookies*` 这类 Cookie 数据库相关文件，不复制密码库或完整 profile。不要默认使用该参数，也不要告诉用户首次启动会自动导入主 Chrome 登录态。
 
 等用户确认后，重新运行 `--check` 验证。
 
@@ -85,19 +94,19 @@ python3 "$SCRIPT_PATH" --setup-chrome --cdp-port 9222
 
 ```bash
 # 基础搜索
-python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --output /tmp/boss/jobs.json
+python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --output ~/.boss-zhipin-scraper/job-result/jobs.json
 
 # 带 CSV 输出
-python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --format csv --output /tmp/boss/jobs.json
+python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --format csv --output ~/.boss-zhipin-scraper/job-result/jobs.json
 
 # 带详情 + 分析报告
-python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --detail --max-details 8 --analysis --format csv --output /tmp/boss/jobs.json
+python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --detail --max-details 8 --analysis --format csv --output ~/.boss-zhipin-scraper/job-result/jobs.json
 
 # 合并多次抓取（去重）
-python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge /tmp/boss/jobs.json --output /tmp/boss/jobs_merged.json
+python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.boss-zhipin-scraper/job-result/jobs.json --output ~/.boss-zhipin-scraper/job-result/jobs_merged.json
 ```
 
-默认输出到 `/tmp/boss/` 目录，`--format csv` 会额外生成 `.csv` 文件。
+默认输出到 `~/.boss-zhipin-scraper/job-result/` 目录，`--format csv` 会额外生成 `.csv` 文件。
 
 ## 参数速查
 
@@ -106,8 +115,8 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge /tm
 | `--keyword` | AI Agent | 搜索关键词 |
 | `--city` | 上海 | 城市名（中文）或代码 |
 | `--pages` | 3 | 抓取页数（上限 10，每页 30 条） |
-| `--output` | /tmp/boss/... | 列表输出路径 |
-| `--detail-output` | /tmp/boss/... | 详情输出路径 |
+| `--output` | ~/.boss-zhipin-scraper/job-result/... | 列表输出路径 |
+| `--detail-output` | ~/.boss-zhipin-scraper/job-result/... | 详情输出路径 |
 | `--format` | json | 输出格式: json / csv |
 | `--detail` | 开启（默认） | 抓取详情页 JD |
 | `--no-detail` | - | 不抓取详情页（关闭默认行为） |
@@ -115,7 +124,9 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge /tm
 | `--analysis` | 关闭 | 输出分析报告 |
 | `--merge FILE` | - | 合并已有 JSON（按 job_id 去重） |
 | `--cdp-port` | 9222 | CDP 端口 |
-| `--setup-chrome` | 关闭 | 一键启动 Chrome CDP（含软链接） |
+| `--setup-chrome` | 关闭 | 一键启动 Chrome CDP（持久隔离 profile） |
+| `--copy-login-state` | 关闭 | 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile；默认、首次启动、重复启动都不复制 |
+| `--reset-chrome-profile` | 关闭 | 重建 BOSS 专用 profile，会清除此专用浏览器登录态 |
 | `--check` | 关闭 | 环境检查 |
 | `--version` | - | 查看版本号 |
 
@@ -174,12 +185,14 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge /tm
 4. 每页 30 条，每页抓完立即写入文件，异常退出不丢数据
 5. 按 `job_id`（job_link 的 MD5 哈希前 16 位）去重
 
-## 数据安全警告
+## 数据安全策略
 
-`--setup-chrome` 创建的软链接指向用户的完整 Chrome profile（含 cookie、密码、历史记录）。CDP 连接可以访问所有这些数据。使用完毕后建议清理：
+`--setup-chrome` 默认使用持久隔离 profile，不软链接、不读取、不复制主 Chrome profile。首次启动和后续重复启动都只会创建或复用 `~/.boss-zhipin-scraper/chrome-profile`，不会清空其中的 BOSS 登录态。这样 CDP 只暴露 BOSS 专用浏览器里的数据，不影响用户主 Chrome、Gmail、GitHub 等账号。
+
+需要清空 BOSS 专用浏览器登录态时使用：
 
 ```bash
-rm /tmp/chrome-cdp-profile
+python3 "$SCRIPT_PATH" --setup-chrome --reset-chrome-profile --cdp-port 9222
 ```
 
 ## 常见问题
@@ -189,7 +202,7 @@ rm /tmp/chrome-cdp-profile
 3. **薪资空白** → 不应该出现，API 返回明文，如仍有问题请提 issue
 4. **抓取中断** → 重新运行即可，增量写入 + 自动去重
 5. **端口占用** → `--cdp-port 9223` 换端口
-6. **Chrome 启动失败** → 先完全关闭 Chrome，再 `--setup-chrome`
+6. **Chrome 启动失败** → `--cdp-port 9223` 换端口，或用 `--reset-chrome-profile` 重建专用 profile
 
 ## 注意事项
 
