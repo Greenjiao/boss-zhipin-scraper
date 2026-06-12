@@ -469,6 +469,11 @@ CSV_COLUMNS = [
     "job_link", "welfare",
 ]
 
+DETAIL_CSV_COLUMNS = [
+    "job_id", "title", "company", "salary", "salary_source", "location",
+    "tags_list", "job_link", "skill_tags", "jd",
+]
+
 
 def write_csv(csv_path, jobs):
     """将 jobs 列表写入 CSV 文件"""
@@ -481,6 +486,20 @@ def write_csv(csv_path, jobs):
             row = {col: j.get(col, "") for col in CSV_COLUMNS}
             writer.writerow(row)
     print(f"CSV 已保存: {csv_path}")
+
+
+def write_detail_csv(csv_path, details):
+    """将岗位详情列表写入 CSV 文件"""
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=DETAIL_CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for d in details:
+            row = {col: d.get(col, "") for col in DETAIL_CSV_COLUMNS}
+            if isinstance(row.get("skill_tags"), list):
+                row["skill_tags"] = " | ".join(row["skill_tags"])
+            writer.writerow(row)
+    print(f"详情 CSV 已保存: {csv_path}")
 
 
 # ============================================================
@@ -792,7 +811,7 @@ def build_detail_record(job, extracted):
 
 
 def scrape_details(list_data, max_details=None, output_path=None,
-                   cdp_port=DEFAULT_CDP_PORT):
+                   cdp_port=DEFAULT_CDP_PORT, fmt="json"):
     jobs = list_data.get("jobs", [])
     if max_details:
         jobs = jobs[:max_details]
@@ -889,6 +908,10 @@ def scrape_details(list_data, max_details=None, output_path=None,
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n详情已保存: {output_path}")
+
+    if fmt == "csv":
+        csv_path = output_path.rsplit(".", 1)[0] + ".csv"
+        write_detail_csv(csv_path, results)
     return results
 
 
@@ -1520,7 +1543,7 @@ def main():
     if args.detail and list_data.get("jobs"):
         details = scrape_details(
             list_data, args.max_details, args.detail_output,
-            cdp_port=args.cdp_port,
+            cdp_port=args.cdp_port, fmt=args.format,
         )
 
     # 分析

@@ -1,4 +1,5 @@
 import importlib.util
+import csv
 import pathlib
 import subprocess
 import sys
@@ -74,6 +75,31 @@ class ChromeSetupTests(unittest.TestCase):
         self.assertEqual(detail["link"], job["job_link"])
         self.assertEqual(detail["salary"], "30-60K")
         self.assertEqual(detail["salary_source"], "api")
+
+    def test_write_detail_csv_exports_detail_fields(self):
+        module = load_module()
+        with tempfile_profile() as paths:
+            csv_path = paths["cdp_profile"] / "details.csv"
+            module.write_detail_csv(str(csv_path), [{
+                "job_id": "abc123",
+                "title": "AI Engineer",
+                "company": "Acme",
+                "salary": "30-60K",
+                "salary_source": "api",
+                "location": "上海",
+                "tags_list": "3-5年 | 本科",
+                "job_link": "https://www.zhipin.com/job_detail/abc.html",
+                "skill_tags": ["Python", "LLM"],
+                "jd": "Build AI agents",
+            }])
+
+            with open(csv_path, encoding="utf-8-sig", newline="") as f:
+                rows = list(csv.DictReader(f))
+
+        self.assertEqual(rows[0]["job_id"], "abc123")
+        self.assertEqual(rows[0]["salary_source"], "api")
+        self.assertEqual(rows[0]["skill_tags"], "Python | LLM")
+        self.assertEqual(rows[0]["jd"], "Build AI agents")
 
     def test_setup_defaults_do_not_copy_cookies_or_kill_all_chrome(self):
         module = load_module()

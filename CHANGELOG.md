@@ -11,7 +11,7 @@
 - `--no-wait-login` / `--login-timeout` 控制 setup 登录等待
 - 默认抓取结果保存到 `~/.boss-zhipin-scraper/job-result`
 - 未传 `--city` 时默认搜索上海
-- `--format csv` 导出 CSV 表格
+- `--format csv` 同时导出列表 CSV 和详情 CSV
 - `--merge` 合并多次抓取结果（去重）
 - `--cdp-port` 自定义 CDP 端口（默认 9222）
 - `--version` 查看版本号

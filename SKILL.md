@@ -107,7 +107,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --detail --
 python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.boss-zhipin-scraper/job-result/jobs.json --output ~/.boss-zhipin-scraper/job-result/jobs_merged.json
 ```
 
-默认输出到 `~/.boss-zhipin-scraper/job-result/` 目录，`--format csv` 会额外生成 `.csv` 文件。
+默认输出到 `~/.boss-zhipin-scraper/job-result/` 目录，`--format csv` 会给列表和详情都额外生成 `.csv` 文件。
 
 ## 参数速查
 
@@ -118,7 +118,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 | `--pages` | 3 | 抓取页数（上限 10，每页 30 条） |
 | `--output` | ~/.boss-zhipin-scraper/job-result/... | 列表输出路径 |
 | `--detail-output` | ~/.boss-zhipin-scraper/job-result/... | 详情输出路径 |
-| `--format` | json | 输出格式: json / csv |
+| `--format` | json | 输出格式: json / csv；csv 同时导出列表和详情 CSV |
 | `--detail` | 开启（默认） | 抓取详情页 JD |
 | `--no-detail` | - | 不抓取详情页（关闭默认行为） |
 | `--max-details` | 全部 | 详情页数量上限 |
@@ -178,7 +178,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 
 ### CSV
 
-`--format csv` 时自动在同目录生成 `.csv` 文件，13 列，UTF-8 BOM 编码，Excel 直接打开无乱码。
+`--format csv` 时自动在同目录生成 `.csv` 文件：列表 CSV 跟随 `--output`，详情 CSV 跟随 `--detail-output` 或默认详情 JSON 路径。CSV 使用 UTF-8 BOM 编码，Excel 直接打开无乱码。
 
 ## 工作原理
 
