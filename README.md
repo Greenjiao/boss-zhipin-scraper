@@ -88,7 +88,8 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --f
 | `--city` | 城市（中文或代码） |
 | `--pages` | 页数（上限 10） |
 | `--format` | json / csv |
-| `--detail` | 抓取详情页 |
+| `--detail` | 抓取详情页 JD（默认开启） |
+| `--no-detail` | 不抓取详情页 |
 | `--analysis` | 分析报告 |
 | `--merge FILE` | 合并已有数据（按 job_id 去重） |
 | `--check` | 环境检查（CDP + 依赖 + 登录态） |

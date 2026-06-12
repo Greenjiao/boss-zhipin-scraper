@@ -109,7 +109,8 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge /tm
 | `--output` | /tmp/boss/... | 列表输出路径 |
 | `--detail-output` | /tmp/boss/... | 详情输出路径 |
 | `--format` | json | 输出格式: json / csv |
-| `--detail` | 关闭 | 同时抓取详情页 JD |
+| `--detail` | 开启（默认） | 抓取详情页 JD |
+| `--no-detail` | - | 不抓取详情页（关闭默认行为） |
 | `--max-details` | 全部 | 详情页数量上限 |
 | `--analysis` | 关闭 | 输出分析报告 |
 | `--merge FILE` | - | 合并已有 JSON（按 job_id 去重） |

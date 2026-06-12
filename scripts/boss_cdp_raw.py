@@ -1211,7 +1211,8 @@ def main():
     p.add_argument("--industry", default=None, help="行业代码")
 
     # 功能开关
-    p.add_argument("--detail", action="store_true", help="抓取详情页 JD")
+    p.add_argument("--detail", action="store_true", default=True, help="抓取详情页 JD（默认开启）")
+    p.add_argument("--no-detail", dest="detail", action="store_false", help="不抓取详情页")
     p.add_argument("--max-details", type=int, default=None, help="最多抓几个详情")
     p.add_argument("--analysis", action="store_true", help="输出分析报告")
     p.add_argument("--input", default=None, help="从已有 JSON 文件读取（跳过抓取）")
