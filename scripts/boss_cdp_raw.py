@@ -1095,28 +1095,40 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
 
     os.makedirs(cdp_default, exist_ok=True)
 
-    # 复制关键文件以保持登录态
-    copy_files = []
-    if os.path.isdir(default_default):
-        # Cookies + Local State = 登录态
-        copy_files.append((os.path.join(default_default, "Cookies"), os.path.join(cdp_default, "Cookies")))
-        copy_files.append((os.path.join(default_default, "Login Data"), os.path.join(cdp_default, "Login Data")))
-        copy_files.append((os.path.join(default_default, "Web Data"), os.path.join(cdp_default, "Web Data")))
-        copy_files.append((os.path.join(default_default, "Preferences"), os.path.join(cdp_default, "Preferences")))
-        copy_files.append((os.path.join(default_default, "Secure Preferences"), os.path.join(cdp_default, "Secure Preferences")))
+    # 只复制 Local State（Chrome 启动必需）+ Cookies（只保留 zhipin.com）
+    copied = 0
     local_state_src = os.path.join(default_profile, "Local State")
     local_state_dst = os.path.join(cdp_data_dir, "Local State")
-    copy_files.append((local_state_src, local_state_dst))
+    if os.path.exists(local_state_src):
+        try:
+            shutil.copy2(local_state_src, local_state_dst)
+            copied += 1
+        except Exception as e:
+            print(f"  ⚠️  复制 Local State 失败: {e}")
 
-    copied = 0
-    for src, dst in copy_files:
-        if os.path.exists(src):
+    cookies_src = os.path.join(default_default, "Cookies")
+    cookies_dst = os.path.join(cdp_default, "Cookies")
+    if os.path.exists(cookies_src):
+        try:
+            shutil.copy2(cookies_src, cookies_dst)
+            # 只保留 zhipin.com 相关 cookie，删除其他所有 cookie（保护用户隐私）
             try:
-                shutil.copy2(src, dst)
-                copied += 1
+                import sqlite3
+                conn = sqlite3.connect(cookies_dst)
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM cookies WHERE host_key NOT LIKE '%zhipin%' AND host_key NOT LIKE '%boss%'")
+                removed = cur.fetchone()[0]
+                cur.execute("DELETE FROM cookies WHERE host_key NOT LIKE '%zhipin%' AND host_key NOT LIKE '%boss%'")
+                conn.commit()
+                conn.close()
+                print(f"  🍪 只保留 zhipin.com cookie（已删除 {removed} 条无关 cookie）")
             except Exception as e:
-                print(f"  ⚠️  复制 {os.path.basename(src)} 失败: {e}")
-    print(f"✅ 已复制 {copied} 个 profile 文件到 {cdp_data_dir}")
+                print(f"  ⚠️  Cookie 过滤失败（不影响使用）: {e}")
+            copied += 1
+        except Exception as e:
+            print(f"  ⚠️  复制 Cookies 失败: {e}")
+
+    print(f"✅ 已复制 {copied} 个 profile 文件到 {cdp_data_dir}（仅含 BOSS直聘 cookie）")
     print("   (不使用软链接，避免 Chrome 检测到默认 profile 拒绝 CDP)")
 
     # 2. 关闭已有 Chrome
