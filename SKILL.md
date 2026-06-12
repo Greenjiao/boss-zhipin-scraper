@@ -77,8 +77,9 @@ python3 "$SCRIPT_PATH" --setup-chrome --cdp-port 9222
 2. 只关闭使用该隔离 profile 的旧 BOSS CDP Chrome，不关闭用户主 Chrome
 3. 以 CDP 模式启动 Chrome（`--remote-debugging-port=9222`）
 4. 等待 CDP 端口就绪（最多 30 秒）
+5. 打开 BOSS 登录页并等待登录完成，直到搜索接口返回明文 `salaryDesc`
 
-默认不复制主 Chrome 的 Cookie、密码、历史记录或扩展；首次启动和后续重复启动都只是创建或复用该专用 profile。首次使用时告诉用户：请在弹出的 BOSS 专用 Chrome 浏览器中访问 zhipin.com 并登录，登录后告诉我。该专用 profile 是持久目录，机器重启后登录态仍保留，重复运行 `--setup-chrome` 不会清空它。
+默认不复制主 Chrome 的 Cookie、密码、历史记录或扩展；首次启动和后续重复启动都只是创建或复用该专用 profile。首次使用时告诉用户：请在弹出的 BOSS 专用 Chrome 浏览器中访问 zhipin.com 并登录。脚本会等待登录完成并确认接口能返回明文薪资。该专用 profile 是持久目录，机器重启后登录态仍保留，重复运行 `--setup-chrome` 不会清空它。
 
 仅当用户明确要求从主 Chrome 手动导入 BOSS 登录态时，可使用：
 
@@ -113,7 +114,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--keyword` | AI Agent | 搜索关键词 |
-| `--city` | 上海 | 城市名（中文）或代码 |
+| `--city` | 上海 | 城市名（中文）或代码；没传时默认上海 |
 | `--pages` | 3 | 抓取页数（上限 10，每页 30 条） |
 | `--output` | ~/.boss-zhipin-scraper/job-result/... | 列表输出路径 |
 | `--detail-output` | ~/.boss-zhipin-scraper/job-result/... | 详情输出路径 |
@@ -127,6 +128,8 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 | `--setup-chrome` | 关闭 | 一键启动 Chrome CDP（持久隔离 profile） |
 | `--copy-login-state` | 关闭 | 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile；默认、首次启动、重复启动都不复制 |
 | `--reset-chrome-profile` | 关闭 | 重建 BOSS 专用 profile，会清除此专用浏览器登录态 |
+| `--no-wait-login` | 关闭 | `--setup-chrome` 启动后不等待 BOSS 登录完成 |
+| `--login-timeout` | 300 | `--setup-chrome` 等待登录完成的秒数 |
 | `--check` | 关闭 | 环境检查 |
 | `--version` | - | 查看版本号 |
 
@@ -187,7 +190,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 
 ## 数据安全策略
 
-`--setup-chrome` 默认使用持久隔离 profile，不软链接、不读取、不复制主 Chrome profile。首次启动和后续重复启动都只会创建或复用 `~/.boss-zhipin-scraper/chrome-profile`，不会清空其中的 BOSS 登录态。这样 CDP 只暴露 BOSS 专用浏览器里的数据，不影响用户主 Chrome、Gmail、GitHub 等账号。
+`--setup-chrome` 默认使用持久隔离 profile，不软链接、不读取、不复制主 Chrome profile。首次启动和后续重复启动都只会创建或复用 `~/.boss-zhipin-scraper/chrome-profile`，不会清空其中的 BOSS 登录态。setup 会等待登录完成，并要求搜索接口返回明文薪资；如果一直拿不到 `salaryDesc`，不要继续抓取并把 DOM 薪资当成可信数据。这样 CDP 只暴露 BOSS 专用浏览器里的数据，不影响用户主 Chrome、Gmail、GitHub 等账号。
 
 需要清空 BOSS 专用浏览器登录态时使用：
 
@@ -198,8 +201,8 @@ python3 "$SCRIPT_PATH" --setup-chrome --reset-chrome-profile --cdp-port 9222
 ## 常见问题
 
 1. **--check CDP 不通** → 运行 `--setup-chrome`
-2. **--check 未登录** → 在 Chrome 中访问 zhipin.com 登录
-3. **薪资空白** → 不应该出现，API 返回明文，如仍有问题请提 issue
+2. **--check 未登录** → 在专用 Chrome 中访问 zhipin.com 登录，或重新运行 `--setup-chrome`
+3. **薪资空白** → 通常是未登录、登录态失效或接口未返回 `salaryDesc`；先重新登录，不要优先做字体解密
 4. **抓取中断** → 重新运行即可，增量写入 + 自动去重
 5. **端口占用** → `--cdp-port 9223` 换端口
 6. **Chrome 启动失败** → `--cdp-port 9223` 换端口，或用 `--reset-chrome-profile` 重建专用 profile

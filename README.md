@@ -72,6 +72,7 @@ pip install -r requirements.txt
 # 2. 启动 Chrome CDP
 python3 scripts/boss_cdp_raw.py --setup-chrome
 # 首次使用也不会复制主 Chrome 登录态；请在弹出的 BOSS 专用浏览器中登录 zhipin.com
+# setup 会等待登录完成，并确认接口能返回明文薪资
 
 # 3. 检查环境
 python3 scripts/boss_cdp_raw.py --check
@@ -85,7 +86,7 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --f
 | 参数 | 说明 |
 |------|------|
 | `--keyword` | 搜索关键词（默认 "AI Agent"） |
-| `--city` | 城市（中文或代码） |
+| `--city` | 城市（中文或代码，默认上海） |
 | `--pages` | 页数（上限 10） |
 | `--format` | json / csv |
 | `--detail` | 抓取详情页 JD（默认开启） |
@@ -96,6 +97,8 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --f
 | `--setup-chrome` | 一键启动 Chrome CDP（持久隔离 profile） |
 | `--copy-login-state` | 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile（默认、首次启动、重复启动都不复制） |
 | `--reset-chrome-profile` | 重建 BOSS 专用 Chrome profile，会清除此专用浏览器内的登录态 |
+| `--no-wait-login` | `--setup-chrome` 启动后不等待登录完成 |
+| `--login-timeout` | `--setup-chrome` 等待登录完成的秒数（默认 300） |
 | `--output` | 列表输出路径（默认 `~/.boss-zhipin-scraper/job-result/`） |
 | `--detail-output` | 详情输出路径（默认 `~/.boss-zhipin-scraper/job-result/`） |
 | `--cdp-port` | CDP 端口（默认 9222） |
@@ -132,7 +135,7 @@ boss-zhipin-scraper/
 
 - `~/.boss-zhipin-scraper/job-result`
 
-首次使用需要在这个专用 Chrome 中手动登录 BOSS直聘。登录态保存在专用 profile 内，重启机器后仍然保留；重复运行 `--setup-chrome` 不会清空它，也不会影响主 Chrome、Gmail、GitHub 等账号。
+首次使用需要在这个专用 Chrome 中手动登录 BOSS直聘。`--setup-chrome` 会等待登录完成，并用搜索接口确认能拿到明文 `salaryDesc` 后再返回。登录态保存在专用 profile 内，重启机器后仍然保留；重复运行 `--setup-chrome` 不会清空它，也不会影响主 Chrome、Gmail、GitHub 等账号。
 
 如确实需要从主 Chrome 手动导入 BOSS 登录态，可以显式运行：
 

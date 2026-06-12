@@ -37,6 +37,44 @@ class ChromeSetupTests(unittest.TestCase):
         self.assertIn("boss_jobs_", module.default_output_path("jobs"))
         self.assertIn("boss_details_", module.default_output_path("details"))
 
+    def test_default_city_is_shanghai_when_not_provided(self):
+        module = load_module()
+
+        self.assertEqual(module.DEFAULT_CITY_INPUT, "上海")
+        self.assertEqual(module.resolve_city(module.DEFAULT_CITY_INPUT), ("上海", "101020100"))
+
+    def test_login_probe_requires_plaintext_salary(self):
+        module = load_module()
+
+        hidden_salary = {"code": 0, "zpData": {"jobList": [{"jobName": "Java", "salaryDesc": ""}]}}
+        visible_salary = {"code": 0, "zpData": {"jobList": [{"jobName": "Java", "salaryDesc": "20-40K"}]}}
+
+        self.assertFalse(module.is_logged_in_search_response(hidden_salary))
+        self.assertTrue(module.is_logged_in_search_response(visible_salary))
+        self.assertFalse(module.is_logged_in_search_response({"code": 7, "zpData": {"jobList": []}}))
+
+    def test_detail_record_preserves_job_id_and_job_link(self):
+        module = load_module()
+        job = {
+            "job_id": "abc123",
+            "title": "AI Engineer",
+            "boss_name": "Acme",
+            "salary": "30-60K",
+            "salary_source": "api",
+            "location": "上海",
+            "tags": "3-5年 | 本科",
+            "job_link": "https://www.zhipin.com/job_detail/abc.html",
+        }
+        extracted = {"tags": ["Python"], "jd": "Build AI agents"}
+
+        detail = module.build_detail_record(job, extracted)
+
+        self.assertEqual(detail["job_id"], "abc123")
+        self.assertEqual(detail["job_link"], job["job_link"])
+        self.assertEqual(detail["link"], job["job_link"])
+        self.assertEqual(detail["salary"], "30-60K")
+        self.assertEqual(detail["salary_source"], "api")
+
     def test_setup_defaults_do_not_copy_cookies_or_kill_all_chrome(self):
         module = load_module()
         calls = {"copy2": [], "run": [], "popen": []}
@@ -60,7 +98,8 @@ class ChromeSetupTests(unittest.TestCase):
                     mock.patch.object(module.shutil, "copy2", side_effect=lambda src, dst: calls["copy2"].append((src, dst))), \
                     mock.patch.object(module.subprocess, "run", side_effect=lambda *args, **kwargs: fake_run(calls, *args, **kwargs)), \
                     mock.patch.object(module.subprocess, "Popen", side_effect=lambda cmd, **kwargs: calls["popen"].append(cmd)), \
-                    mock.patch.object(module.time, "sleep", return_value=None):
+                    mock.patch.object(module.time, "sleep", return_value=None), \
+                    mock.patch.object(module, "wait_for_login", return_value=True) as wait_login:
                 fake_requests.get.side_effect = fake_get
                 self.assertEqual(module.run_setup_chrome(cdp_port=9333), 0)
 
@@ -69,6 +108,7 @@ class ChromeSetupTests(unittest.TestCase):
         self.assertTrue(calls["popen"])
         launched = calls["popen"][0]
         self.assertIn(expected_profile_arg, launched)
+        wait_login.assert_called_once_with(9333, timeout=module.DEFAULT_LOGIN_TIMEOUT)
 
     def test_copy_login_state_is_explicit_and_does_not_copy_password_databases(self):
         module = load_module()
@@ -120,10 +160,30 @@ class ChromeSetupTests(unittest.TestCase):
             with mock.patch.object(module, "DEFAULT_CDP_DATA_DIR", str(paths["cdp_profile"])), \
                     mock.patch.object(module, "requests", fake_requests), \
                     mock.patch.object(module.subprocess, "run", return_value=type("Completed", (), {"stdout": ps_output, "returncode": 0})()), \
-                    mock.patch.object(module.subprocess, "Popen") as popen:
+                    mock.patch.object(module.subprocess, "Popen") as popen, \
+                    mock.patch.object(module, "wait_for_login", return_value=True) as wait_login:
                 self.assertEqual(module.run_setup_chrome(cdp_port=9333), 0)
 
         popen.assert_not_called()
+        wait_login.assert_called_once_with(9333, timeout=module.DEFAULT_LOGIN_TIMEOUT)
+
+    def test_setup_can_skip_waiting_for_login(self):
+        module = load_module()
+        fake_requests = mock.Mock()
+        fake_requests.get.return_value = type("Resp", (), {"status_code": 200})()
+
+        with tempfile_profile() as paths:
+            ps_output = (
+                "123 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
+                f"--remote-debugging-port=9333 --user-data-dir={paths['cdp_profile']}\n"
+            )
+            with mock.patch.object(module, "DEFAULT_CDP_DATA_DIR", str(paths["cdp_profile"])), \
+                    mock.patch.object(module, "requests", fake_requests), \
+                    mock.patch.object(module.subprocess, "run", return_value=type("Completed", (), {"stdout": ps_output, "returncode": 0})()), \
+                    mock.patch.object(module, "wait_for_login") as wait_login:
+                self.assertEqual(module.run_setup_chrome(cdp_port=9333, wait_login=False), 0)
+
+        wait_login.assert_not_called()
 
     def test_chrome_process_parsing_matches_unquoted_user_data_dir(self):
         module = load_module()
@@ -151,6 +211,8 @@ class ChromeSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("--setup-chrome", result.stdout)
         self.assertIn("--reset-chrome-profile", result.stdout)
+        self.assertIn("--no-wait-login", result.stdout)
+        self.assertIn("--login-timeout", result.stdout)
 
 
 class tempfile_profile:

@@ -66,6 +66,11 @@ else:
 
 DEFAULT_CDP_DATA_DIR = os.path.expanduser("~/.boss-zhipin-scraper/chrome-profile")
 DEFAULT_RESULT_DIR = os.path.expanduser("~/.boss-zhipin-scraper/job-result")
+DEFAULT_CITY_INPUT = "上海"
+LOGIN_PROBE_QUERY = "Java"
+LOGIN_PROBE_CITY = "101020100"
+LOGIN_PROBE_PAGE_SIZE = 10
+DEFAULT_LOGIN_TIMEOUT = 300
 
 # 全局请求计数器
 _request_counter = 0
@@ -258,6 +263,7 @@ FETCH_API_JS_TEMPLATE = """
         return {
             title: j.jobName || '',
             salary: j.salaryDesc || '',
+            salary_source: j.salaryDesc ? 'api' : 'api_empty',
             location: (j.cityName || '') + '\\u00b7' + (j.areaDistrict || '') + '\\u00b7' + (j.businessDistrict || ''),
             tags: [j.jobExperience || '', j.jobDegree || ''].filter(function(t){return t && t !== '\\u4e0d\\u9650';}).join(' | '),
             boss_name: j.brandName || '',
@@ -303,6 +309,7 @@ EXTRACT_LIST_JS = """
         if (t) results.push({
             title: t,
             salary: salaryEl ? salaryEl.innerText.trim() : '',
+            salary_source: 'dom_untrusted',
             location: locEl ? locEl.innerText.trim() : '',
             tags: tags.join(' | '),
             boss_name: bossEl ? bossEl.innerText.trim() : '',
@@ -361,6 +368,38 @@ def resolve_city(city_input):
     return city_input, city_input
 
 
+def is_logged_in_search_response(data):
+    """Return True only when BOSS returns jobs with plaintext salary."""
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return False
+    zp_data = data.get("zpData", {})
+    if not isinstance(zp_data, dict):
+        return False
+    job_list = zp_data.get("jobList")
+    if not isinstance(job_list, list) or not job_list:
+        return False
+    return any((job.get("salaryDesc") or "").strip() for job in job_list if isinstance(job, dict))
+
+
+def probe_login_state(cdp, sid):
+    js = f"""
+    (function(){{
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '{API_JOB_LIST_PATH}?scene=1&query={quote(LOGIN_PROBE_QUERY)}&city={LOGIN_PROBE_CITY}&page=1&pageSize={LOGIN_PROBE_PAGE_SIZE}', false);
+        xhr.send();
+        return xhr.responseText;
+    }})()
+    """
+    val = cdp.eval_js(js, sid)
+    if not val:
+        return False
+    try:
+        data = json.loads(val) if isinstance(val, str) else val
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return is_logged_in_search_response(data)
+
+
 # ============================================================
 # 登录状态检测
 # ============================================================
@@ -381,52 +420,51 @@ def check_login_state(cdp_port=DEFAULT_CDP_PORT):
         cdp.send("Page.navigate", {"url": "https://www.zhipin.com/"}, sid)
         time.sleep(4)
 
-        # 用搜索 API 探测登录态（已验证可用的接口）
-        js = """
-        (function(){
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', '/wapi/zpgeek/search/joblist.json?scene=1&query=test&city=101020100&page=1&pageSize=1', false);
-            xhr.send();
-            return xhr.responseText;
-        })()
-        """
-        val = cdp.eval_js(js, sid)
+        logged_in = probe_login_state(cdp, sid)
 
         cdp.send("Target.closeTarget", {"targetId": tid})
         cdp.close()
 
-        if not val:
-            return False
-
-        try:
-            data = json.loads(val) if isinstance(val, str) else val
-        except (json.JSONDecodeError, ValueError):
-            return False
-
-        # 搜索接口 code=0 且有 jobList 说明已登录
-        if data.get("code") == 0:
-            zp_data = data.get("zpData", {})
-            if isinstance(zp_data, dict):
-                job_list = zp_data.get("jobList")
-                if job_list is not None:
-                    return True
-            # code=0 但没有 jobList，可能是登录了但搜索无结果，也算登录
-            return True
-
-        # code=7 通常表示未登录
-        log.debug(f"登录检测 API code={data.get('code')}, message={data.get('message', '')}")
-        return False
+        return logged_in
     except (requests.ConnectionError, requests.Timeout, KeyError,
             json.JSONDecodeError, websocket.WebSocketException) as e:
         log.error(f"登录状态检测失败: {e}")
         return False
 
 
+def wait_for_login(cdp_port=DEFAULT_CDP_PORT, timeout=DEFAULT_LOGIN_TIMEOUT, interval=3):
+    """Open BOSS login page and wait until plaintext salary is available."""
+    cdp = CDPSession(cdp_port)
+    r = cdp.send("Target.createTarget", {"url": "https://www.zhipin.com/web/user/"})
+    tid = r["result"]["targetId"]
+    r = cdp.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
+    sid = r["result"]["sessionId"]
+
+    deadline = time.time() + timeout
+    logged_in = False
+    print(f"等待 BOSS 登录完成（最长 {timeout}s）", end="", flush=True)
+    try:
+        while time.time() <= deadline:
+            if probe_login_state(cdp, sid):
+                logged_in = True
+                print("\n✅ 已检测到 BOSS 登录态，且接口返回明文薪资")
+                return True
+            print(".", end="", flush=True)
+            time.sleep(interval)
+        print("\n❌ 等待登录超时")
+        print("   Chrome 会继续保持打开；登录后可重新运行 --check 或抓取命令")
+        return False
+    finally:
+        if logged_in:
+            cdp.send("Target.closeTarget", {"targetId": tid})
+        cdp.close()
+
+
 # ============================================================
 # CSV 导出
 # ============================================================
 CSV_COLUMNS = [
-    "job_id", "title", "salary", "location", "tags", "boss_name",
+    "job_id", "title", "salary", "salary_source", "location", "tags", "boss_name",
     "company_scale", "company_stage", "company_industry", "skills",
     "job_link", "welfare",
 ]
@@ -736,6 +774,23 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
 # ============================================================
 # 抓取详情
 # ============================================================
+def build_detail_record(job, extracted):
+    link = job.get("job_link", "")
+    return {
+        "job_id": job.get("job_id", ""),
+        "title": job.get("title", ""),
+        "company": job.get("boss_name", ""),
+        "salary": job.get("salary", ""),
+        "salary_source": job.get("salary_source", ""),
+        "location": job.get("location", ""),
+        "tags_list": job.get("tags", ""),
+        "job_link": link,
+        "link": link,
+        "skill_tags": extracted.get("tags", []),
+        "jd": extracted.get("jd", ""),
+    }
+
+
 def scrape_details(list_data, max_details=None, output_path=None,
                    cdp_port=DEFAULT_CDP_PORT):
     jobs = list_data.get("jobs", [])
@@ -809,16 +864,7 @@ def scrape_details(list_data, max_details=None, output_path=None,
         except (json.JSONDecodeError, ValueError, TypeError):
             d = {"jd": "", "tags": []}
 
-        detail = {
-            "title": title,
-            "company": company,
-            "salary": job.get("salary", ""),
-            "location": job.get("location", ""),
-            "tags_list": job.get("tags", ""),
-            "link": link,
-            "skill_tags": d.get("tags", []),
-            "jd": d.get("jd", ""),
-        }
+        detail = build_detail_record(job, d)
         results.append(detail)
 
         if d.get("tags"):
@@ -1250,7 +1296,9 @@ def wait_for_cdp(cdp_port, timeout=30):
     return False
 
 
-def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False, reset_profile=False):
+def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False,
+                     reset_profile=False, wait_login=True,
+                     login_timeout=DEFAULT_LOGIN_TIMEOUT):
     """自动配置并启动 Chrome CDP 模式"""
     if not require_runtime_dependencies("requests"):
         return 1
@@ -1273,6 +1321,8 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False, reset_pr
     if is_cdp_ready(cdp_port):
         if cdp_port_uses_profile(cdp_port, cdp_data_dir):
             print(f"\n✅ CDP 已就绪 (端口 {cdp_port})")
+            if wait_login:
+                return 0 if wait_for_login(cdp_port, timeout=login_timeout) else 1
             return 0
         print(f"\n❌ 端口 {cdp_port} 已被其他 Chrome CDP profile 占用")
         print(f"   请关闭旧 CDP Chrome，或改用 --cdp-port 指定其他端口")
@@ -1298,7 +1348,11 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False, reset_pr
         return 1
 
     print()
-    print("Chrome 已启动。请在这个专用浏览器中登录 zhipin.com，然后运行抓取命令。")
+    print("Chrome 已启动。请在这个专用浏览器中登录 zhipin.com。")
+    if wait_login:
+        print()
+        if not wait_for_login(cdp_port, timeout=login_timeout):
+            return 1
     print()
     print(f"示例:")
     print(f"  uv run python3 scripts/boss_cdp_raw.py --keyword \"AI Agent\" --city 上海 --pages 3")
@@ -1352,7 +1406,7 @@ def main():
         """)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--keyword", default="AI Agent", help="搜索关键词")
-    p.add_argument("--city", default="101020100", help="城市 (中文名或代码)")
+    p.add_argument("--city", default=DEFAULT_CITY_INPUT, help=f"城市 (中文名或代码，默认 {DEFAULT_CITY_INPUT})")
     p.add_argument("--pages", type=int, default=3, help=f"抓取页数 (最大 {MAX_PAGES})")
     p.add_argument("--output", default=None, help="列表数据输出路径")
     p.add_argument("--detail-output", default=None, help="详情数据输出路径")
@@ -1386,6 +1440,10 @@ def main():
                    help="手动从主 Chrome 导入 Local State + Cookie 相关文件到独立 profile（默认、首次启动、重复启动都不复制）")
     p.add_argument("--reset-chrome-profile", action="store_true",
                    help="重建 BOSS 专用 Chrome profile，会清除此专用浏览器内的登录态")
+    p.add_argument("--no-wait-login", action="store_true",
+                   help="--setup-chrome 启动后不等待 BOSS 登录完成")
+    p.add_argument("--login-timeout", type=int, default=DEFAULT_LOGIN_TIMEOUT,
+                   help=f"--setup-chrome 等待登录完成的秒数 (默认 {DEFAULT_LOGIN_TIMEOUT})")
 
     args = p.parse_args()
 
@@ -1399,6 +1457,8 @@ def main():
             args.cdp_port,
             copy_login_state=args.copy_login_state,
             reset_profile=args.reset_chrome_profile,
+            wait_login=not args.no_wait_login,
+            login_timeout=args.login_timeout,
         ))
 
     if not require_runtime_dependencies("requests", "websocket"):

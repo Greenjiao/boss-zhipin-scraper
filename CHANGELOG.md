@@ -7,7 +7,10 @@
 - `--setup-chrome` 一键启动 Chrome CDP（持久隔离 profile）
 - `--copy-login-state` 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile
 - `--reset-chrome-profile` 重建 BOSS 专用 Chrome profile
+- `--setup-chrome` 默认等待 BOSS 登录完成，并确认接口返回明文薪资
+- `--no-wait-login` / `--login-timeout` 控制 setup 登录等待
 - 默认抓取结果保存到 `~/.boss-zhipin-scraper/job-result`
+- 未传 `--city` 时默认搜索上海
 - `--format csv` 导出 CSV 表格
 - `--merge` 合并多次抓取结果（去重）
 - `--cdp-port` 自定义 CDP 端口（默认 9222）
@@ -23,6 +26,7 @@
 - 清除所有 bare except，改为具体异常类型
 - API 路径提取为常量，方便维护
 - DOM fallback 标记为 deprecated
+- 详情输出保留 `job_id`、`job_link` 和 `salary_source`
 - Linux 平台支持（Chrome 路径 + 隔离 profile）
 - pyproject.toml 版本锁定依赖
 
