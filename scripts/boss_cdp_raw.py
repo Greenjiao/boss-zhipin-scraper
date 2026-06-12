@@ -1153,6 +1153,7 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
         f"--user-data-dir={cdp_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--remote-allow-origins=*",
     ]
     # 启动 Chrome（不阻塞）
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
