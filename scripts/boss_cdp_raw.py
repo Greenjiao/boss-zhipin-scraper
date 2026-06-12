@@ -1102,7 +1102,30 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
         )
     else:
         subprocess.run(["pkill", "-f", "google-chrome"], capture_output=True, timeout=5)
-    time.sleep(2)
+    # 等待 Chrome 完全退出
+    for i in range(15):
+        time.sleep(1)
+        chrome_running = False
+        try:
+            if platform.system() == "Darwin":
+                r = subprocess.run(["pgrep", "-x", "Google Chrome"],
+                                   capture_output=True, timeout=5)
+                chrome_running = r.returncode == 0
+            else:
+                r = subprocess.run(["pgrep", "-f", "google-chrome"],
+                                   capture_output=True, timeout=5)
+                chrome_running = r.returncode == 0
+        except Exception:
+            pass
+        if not chrome_running:
+            break
+    else:
+        print("⚠️  Chrome 未完全退出，强制终止...")
+        if platform.system() == "Darwin":
+            subprocess.run(["killall", "-9", "Google Chrome"], capture_output=True, timeout=5)
+        else:
+            subprocess.run(["pkill", "-9", "-f", "google-chrome"], capture_output=True, timeout=5)
+        time.sleep(2)
     print("✅ 已关闭")
 
     # 3. 启动 Chrome
@@ -1116,9 +1139,9 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT):
     ]
     # 启动 Chrome（不阻塞）
     if platform.system() == "Darwin":
-        # macOS: 用 open 命令
-        subprocess.Popen(["open", "-a", "Google Chrome", "--args"] + cmd[1:],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # macOS: 直接用可执行路径启动（不通过 open -a，避免参数丢失）
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
     else:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
