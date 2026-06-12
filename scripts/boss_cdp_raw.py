@@ -730,6 +730,7 @@ def scrape_details(list_data, max_details=None, output_path=None,
             continue
         seen_links.add(link)
 
+        t0 = time.time()
         print(f"[{idx+1}/{len(jobs)}] {company} - {title}")
 
         incr_request()
@@ -742,10 +743,12 @@ def scrape_details(list_data, max_details=None, output_path=None,
         sid = r["result"]["sessionId"]
 
         ws.send("Page.navigate", {"url": link}, sid)
+        print(f"  加载页面...")
         time.sleep(random.uniform(5, 10))
 
         # 模拟人类阅读详情页的滚动行为
         scroll_count = random.randint(3, 7)
+        print(f"  模拟滚动 ({scroll_count} 次)...")
         for i in range(scroll_count):
             if random.random() < 0.12:
                 # 偶尔往上回滚（回看内容）
@@ -768,6 +771,7 @@ def scrape_details(list_data, max_details=None, output_path=None,
             }, sid)
             time.sleep(random.uniform(0.5, 1.5))
 
+        print(f"  提取 JD...")
         val = ws.eval_js(EXTRACT_DETAIL_JS, sid)
         try:
             d = json.loads(val) if isinstance(val, str) else {"jd": "", "tags": []}
@@ -788,7 +792,7 @@ def scrape_details(list_data, max_details=None, output_path=None,
 
         if d.get("tags"):
             print(f"  技能: {', '.join(d['tags'])}")
-        print(f"  JD: {len(d.get('jd',''))} 字")
+        print(f"  JD: {len(d.get('jd',''))} 字 ({time.time()-t0:.0f}s)")
 
         # 每抓完一个详情就写入，异常退出也能保留
         if output_path:
