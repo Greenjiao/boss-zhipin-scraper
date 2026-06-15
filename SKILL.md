@@ -4,7 +4,7 @@ description: "Scrape BOSS直聘 (job listing site) via Chrome CDP. Searches jobs
 version: 2.0.0
 author: eatmoreduck
 license: MIT
-platforms: [macos, linux]
+platforms: [macos, linux, windows]
 metadata:
   hermes:
     tags: [scraper, jobs, career, cdp, chrome, zhipin, boss直聘]
@@ -58,7 +58,7 @@ pip install websocket-client requests
 python3 "$SCRIPT_PATH" --check --cdp-port 9222
 ```
 
-检查三项：CDP 连通性 → Python 依赖 → 登录态。
+检查三项：Python 依赖 → CDP 连通性 → 登录态。
 
 - **全部通过** → 跳到第 3 步
 - **CDP 不通** → 继续第 2 步
@@ -103,11 +103,14 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --format cs
 # 带详情 + 分析报告
 python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --detail --max-details 8 --analysis --format csv --output ~/.boss-zhipin-scraper/job-result/jobs.json
 
+# 真实浏览器/API smoke test（不写结果文件）
+python3 "$SCRIPT_PATH" --smoke-test --cdp-port 9222
+
 # 合并多次抓取（去重）
 python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.boss-zhipin-scraper/job-result/jobs.json --output ~/.boss-zhipin-scraper/job-result/jobs_merged.json
 ```
 
-默认输出到 `~/.boss-zhipin-scraper/job-result/` 目录，`--format csv` 会给列表和详情都额外生成 `.csv` 文件。
+默认输出到 `~/.boss-zhipin-scraper/job-result/` 目录，`--format csv` 会给列表和详情都额外生成 `.csv` 文件。`--smoke-test` 只验证真实 Chrome/CDP 能否拿到 API 明文薪资，不写结果文件。
 
 ## 参数速查
 
@@ -123,6 +126,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 | `--no-detail` | - | 不抓取详情页（关闭默认行为） |
 | `--max-details` | 全部 | 详情页数量上限 |
 | `--analysis` | 关闭 | 输出分析报告 |
+| `--allow-dom-fallback` | 关闭 | API 无数据时允许降级 DOM 提取；默认关闭，薪资可能不可信 |
 | `--merge FILE` | - | 合并已有 JSON（按 job_id 去重） |
 | `--cdp-port` | 9222 | CDP 端口 |
 | `--setup-chrome` | 关闭 | 一键启动 Chrome CDP（持久隔离 profile） |
@@ -131,6 +135,7 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 | `--no-wait-login` | 关闭 | `--setup-chrome` 启动后不等待 BOSS 登录完成 |
 | `--login-timeout` | 300 | `--setup-chrome` 等待登录完成的秒数 |
 | `--check` | 关闭 | 环境检查 |
+| `--smoke-test` | 关闭 | 真实 Chrome/CDP 搜索 API smoke test，不写结果文件 |
 | `--version` | - | 查看版本号 |
 
 ### 筛选参数
@@ -185,12 +190,16 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 1. 通过 Chrome DevTools Protocol (CDP) 连接到已打开的 Chrome 浏览器
 2. 在 BOSS直聘页面内注入 JS，用同步 XHR 调用 `/wapi/zpgeek/search/joblist.json` API
 3. API 返回明文 `salaryDesc`（如 `30-60K·15薪`），绕过前端字体反爬
-4. 每页 30 条，每页抓完立即写入文件，异常退出不丢数据
-5. 按 `job_id`（job_link 的 MD5 哈希前 16 位）去重
+4. 列表 API 保留 `securityId` / `lid` 等上下文，进入详情页时带上这些参数
+5. 默认禁用 DOM fallback，避免把字体反爬后的薪资写入结果；只有显式 `--allow-dom-fallback` 才降级
+6. 每页 30 条，每页抓完立即写入文件，异常退出不丢数据
+7. 按 `job_id`（job_link 的 MD5 哈希前 16 位）去重
 
 ## 数据安全策略
 
-`--setup-chrome` 默认使用持久隔离 profile，不软链接、不读取、不复制主 Chrome profile。首次启动和后续重复启动都只会创建或复用 `~/.boss-zhipin-scraper/chrome-profile`，不会清空其中的 BOSS 登录态。setup 会等待登录完成，并要求搜索接口返回明文薪资；如果一直拿不到 `salaryDesc`，不要继续抓取并把 DOM 薪资当成可信数据。这样 CDP 只暴露 BOSS 专用浏览器里的数据，不影响用户主 Chrome、Gmail、GitHub 等账号。
+`--setup-chrome` 默认使用持久隔离 profile，不软链接、不读取、不复制主 Chrome profile。首次启动和后续重复启动都只会创建或复用 `~/.boss-zhipin-scraper/chrome-profile`，不会清空其中的 BOSS 登录态。setup 会等待登录完成，并用多组关键词/城市 probe，要求搜索接口返回明文薪资；如果一直拿不到 `salaryDesc`，不要继续抓取并把 DOM 薪资当成可信数据。这样 CDP 只暴露 BOSS 专用浏览器里的数据，不影响用户主 Chrome、Gmail、GitHub 等账号。
+
+`--input ... --analysis --no-detail` 会优先加载 `--detail-output`，其次加载与输入列表同目录、同时间戳的 `boss_details_*.json`，最后查找 `~/.boss-zhipin-scraper/job-result` 下最新详情文件。
 
 需要清空 BOSS 专用浏览器登录态时使用：
 
@@ -202,7 +211,7 @@ python3 "$SCRIPT_PATH" --setup-chrome --reset-chrome-profile --cdp-port 9222
 
 1. **--check CDP 不通** → 运行 `--setup-chrome`
 2. **--check 未登录** → 在专用 Chrome 中访问 zhipin.com 登录，或重新运行 `--setup-chrome`
-3. **薪资空白** → 通常是未登录、登录态失效或接口未返回 `salaryDesc`；先重新登录，不要优先做字体解密
+3. **薪资空白** → 通常是未登录、登录态失效或接口未返回 `salaryDesc`；先重新登录，不要优先做字体解密或 DOM fallback
 4. **抓取中断** → 重新运行即可，增量写入 + 自动去重
 5. **端口占用** → `--cdp-port 9223` 换端口
 6. **Chrome 启动失败** → `--cdp-port 9223` 换端口，或用 `--reset-chrome-profile` 重建专用 profile

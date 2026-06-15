@@ -30,14 +30,16 @@ import os
 import re
 import hashlib
 import csv
+import glob
 import platform
 import subprocess
 import shutil
 import signal
 import logging
+import ntpath
 from datetime import datetime
 from collections import Counter
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse, urlunparse, parse_qsl
 
 websocket = None
 requests = None
@@ -56,19 +58,58 @@ API_JOB_LIST_PATH = "/wapi/zpgeek/search/joblist.json"
 MAX_PAGES = 10          # 单次最大页数
 MAX_API_REQUESTS = 500  # 单次最大 API 请求数
 
-# 平台检测
-if platform.system() == "Darwin":
-    DEFAULT_CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    DEFAULT_PROFILE_DIR = os.path.expanduser("~/Library/Application Support/Google/Chrome")
-else:
-    DEFAULT_CHROME_PATH = "/usr/bin/google-chrome"
-    DEFAULT_PROFILE_DIR = os.path.expanduser("~/.config/google-chrome")
+def get_default_chrome_path():
+    system = platform.system()
+    if system == "Darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if system == "Windows":
+        candidates = []
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(ntpath.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"))
+        for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(env_name)
+            if base:
+                candidates.append(ntpath.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return candidates[0] if candidates else "chrome.exe"
+
+    candidates = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
+def get_default_profile_dir():
+    system = platform.system()
+    if system == "Darwin":
+        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    if system == "Windows":
+        base = os.environ.get("LOCALAPPDATA")
+        if not base:
+            base = ntpath.join(os.path.expanduser("~"), "AppData", "Local")
+        return ntpath.join(base, "Google", "Chrome", "User Data")
+    return os.path.expanduser("~/.config/google-chrome")
+
+
+DEFAULT_CHROME_PATH = get_default_chrome_path()
+DEFAULT_PROFILE_DIR = get_default_profile_dir()
 
 DEFAULT_CDP_DATA_DIR = os.path.expanduser("~/.boss-zhipin-scraper/chrome-profile")
 DEFAULT_RESULT_DIR = os.path.expanduser("~/.boss-zhipin-scraper/job-result")
 DEFAULT_CITY_INPUT = "上海"
 LOGIN_PROBE_QUERY = "Java"
+LOGIN_PROBE_QUERIES = ("Java", "AI Agent", "产品经理")
 LOGIN_PROBE_CITY = "101020100"
+LOGIN_PROBE_CITIES = ("101020100", "101010100", "101280600")
 LOGIN_PROBE_PAGE_SIZE = 10
 DEFAULT_LOGIN_TIMEOUT = 300
 
@@ -273,6 +314,11 @@ FETCH_API_JS_TEMPLATE = """
             company_industry: j.brandIndustry || '',
             job_labels: (j.jobLabels || []).join(' | '),
             skills: (j.skills || []).join(' | '),
+            security_id: j.securityId || '',
+            lid: j.lid || '',
+            encrypt_job_id: j.encryptJobId || '',
+            encrypt_boss_id: j.encryptBossId || '',
+            encrypt_brand_id: j.encryptBrandId || '',
             job_link: j.encryptJobId ? 'https://www.zhipin.com/job_detail/' + j.encryptJobId + '.html' : '',
             company_link: j.encryptBrandId ? 'https://www.zhipin.com/gongsi/' + j.encryptBrandId + '.html' : '',
             welfare: (j.welfareList || []).join(' | ')
@@ -381,23 +427,39 @@ def is_logged_in_search_response(data):
     return any((job.get("salaryDesc") or "").strip() for job in job_list if isinstance(job, dict))
 
 
+def build_login_probe_url(query, city_code):
+    params = {
+        "scene": 1,
+        "query": query,
+        "city": city_code,
+        "page": 1,
+        "pageSize": LOGIN_PROBE_PAGE_SIZE,
+    }
+    return f"{API_JOB_LIST_PATH}?{urlencode(params)}"
+
+
 def probe_login_state(cdp, sid):
-    js = f"""
-    (function(){{
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', '{API_JOB_LIST_PATH}?scene=1&query={quote(LOGIN_PROBE_QUERY)}&city={LOGIN_PROBE_CITY}&page=1&pageSize={LOGIN_PROBE_PAGE_SIZE}', false);
-        xhr.send();
-        return xhr.responseText;
-    }})()
-    """
-    val = cdp.eval_js(js, sid)
-    if not val:
-        return False
-    try:
-        data = json.loads(val) if isinstance(val, str) else val
-    except (json.JSONDecodeError, ValueError):
-        return False
-    return is_logged_in_search_response(data)
+    for query in LOGIN_PROBE_QUERIES:
+        for city_code in LOGIN_PROBE_CITIES:
+            probe_url = build_login_probe_url(query, city_code)
+            js = f"""
+            (function(){{
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '{probe_url}', false);
+                xhr.send();
+                return xhr.responseText;
+            }})()
+            """
+            val = cdp.eval_js(js, sid)
+            if not val:
+                continue
+            try:
+                data = json.loads(val) if isinstance(val, str) else val
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if is_logged_in_search_response(data):
+                return True
+    return False
 
 
 # ============================================================
@@ -600,11 +662,98 @@ def build_search_url(keyword, city_code, page, filters):
     return f"https://www.zhipin.com/web/geek/job?{urlencode(params)}"
 
 
+def should_use_dom_fallback(jobs, allow_dom_fallback=False):
+    return allow_dom_fallback and not jobs
+
+
+def parse_api_jobs_eval_value(value):
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    jobs = []
+    for item in parsed:
+        if not isinstance(item, dict) or item.get("error"):
+            continue
+        if item.get("title") or item.get("job_link"):
+            jobs.append(item)
+    return jobs
+
+
+def build_detail_url(job):
+    """Build the URL used for detail navigation without mutating job_link."""
+    link = job.get("job_link", "")
+    if not link:
+        return ""
+
+    parsed = urlparse(link)
+    params = parse_qsl(parsed.query, keep_blank_values=True)
+    existing_keys = {key for key, _ in params}
+    for query_key, job_key in (("lid", "lid"), ("securityId", "security_id")):
+        value = job.get(job_key) or job.get(query_key) or ""
+        if value and query_key not in existing_keys:
+            params.append((query_key, value))
+            existing_keys.add(query_key)
+
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
+def find_latest_detail_file(result_dir=DEFAULT_RESULT_DIR):
+    pattern = os.path.join(result_dir, "boss_details_*.json")
+    files = [path for path in glob.glob(pattern) if os.path.isfile(path)]
+    if not files:
+        return None
+    return max(files, key=lambda path: (os.path.getmtime(path), path))
+
+
+def detail_candidate_paths(input_path=None, detail_output=None, result_dir=DEFAULT_RESULT_DIR):
+    candidates = []
+    if detail_output:
+        candidates.append(detail_output)
+    if input_path:
+        directory = os.path.dirname(input_path) or "."
+        basename = os.path.basename(input_path)
+        if basename.startswith("boss_jobs_"):
+            candidates.append(os.path.join(directory, basename.replace("boss_jobs_", "boss_details_", 1)))
+    latest = find_latest_detail_file(result_dir)
+    if latest:
+        candidates.append(latest)
+
+    deduped = []
+    seen = set()
+    for path in candidates:
+        normalized = os.path.abspath(os.path.expanduser(path))
+        if normalized not in seen:
+            deduped.append(path)
+            seen.add(normalized)
+    return deduped
+
+
+def load_existing_details(input_path=None, detail_output=None, result_dir=DEFAULT_RESULT_DIR):
+    for path in detail_candidate_paths(input_path, detail_output, result_dir):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                details = json.load(f)
+            if isinstance(details, list):
+                print(f"加载详情文件: {path}")
+                return details
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            log.warning(f"无法加载详情文件 {path}: {e}")
+    return None
+
+
 # ============================================================
 # 抓取列表
 # ============================================================
 def scrape_list(keyword, city_input, max_pages, filters, output_path,
-                cdp_port=DEFAULT_CDP_PORT, fmt="json"):
+                cdp_port=DEFAULT_CDP_PORT, fmt="json", allow_dom_fallback=False):
     city_name, city_code = resolve_city(city_input)
     cdp = CDPSession(cdp_port)
     all_jobs = []
@@ -696,19 +845,10 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
             api_js = FETCH_API_JS_TEMPLATE.replace("__API_URL__", api_url)
             val = cdp.eval_js(api_js, sid)
 
-            jobs = None
-            if val:
-                try:
-                    parsed = json.loads(val) if isinstance(val, str) else val
-                    if isinstance(parsed, list):
-                        jobs = parsed
-                    elif isinstance(parsed, dict) and parsed.get("error"):
-                        print(f"  ⚠️ API 返回错误: {parsed['error']}")
-                except (json.JSONDecodeError, ValueError):
-                    pass
+            jobs = parse_api_jobs_eval_value(val)
 
-            # API 失败时 fallback 到 DOM 提取（已弃用）
-            if not jobs:
+            # DOM 提取的薪资可能是加密字体，默认禁用；只有显式允许时才降级。
+            if should_use_dom_fallback(jobs, allow_dom_fallback):
                 log.warning("⚠️ API 获取失败，回退到 DOM 提取（此方式已弃用，数据可能不完整）")
                 if pg > 1:
                     url = build_search_url(keyword, city_code, pg, filters)
@@ -722,6 +862,8 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                     except (json.JSONDecodeError, ValueError):
                         print(f"  ⚠️ JSON 解析失败")
                         jobs = []
+            elif not jobs:
+                log.warning("⚠️ API 未返回职位数据，已跳过 DOM fallback；如需强制降级可加 --allow-dom-fallback")
 
             if not jobs:
                 print("  ⚠️ 无数据")
@@ -847,7 +989,8 @@ def scrape_details(list_data, max_details=None, output_path=None,
         r = ws.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
         sid = r["result"]["sessionId"]
 
-        ws.send("Page.navigate", {"url": link}, sid)
+        detail_url = build_detail_url(job)
+        ws.send("Page.navigate", {"url": detail_url}, sid)
         print(f"  加载页面...")
         time.sleep(random.uniform(5, 10))
 
@@ -1108,6 +1251,64 @@ def analyze(list_data, details=None, search_keyword=""):
         print("  提示: 用 --detail 抓取 JD 详情后可获得更精准的简历建议")
 
 
+def parse_jobs_eval_value(value):
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def has_usable_smoke_jobs(jobs):
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        if (
+            job.get("title")
+            and job.get("salary")
+            and job.get("salary_source") == "api"
+            and job.get("job_link")
+        ):
+            return True
+    return False
+
+
+def run_smoke_test(cdp_port=DEFAULT_CDP_PORT):
+    """Run a real browser/API smoke test without writing result files."""
+    if not require_runtime_dependencies("requests", "websocket"):
+        return 1
+
+    try:
+        cdp = CDPSession(cdp_port)
+        city_name, city_code = resolve_city(DEFAULT_CITY_INPUT)
+        search_url = build_search_url(LOGIN_PROBE_QUERY, city_code, 1, {})
+        r = cdp.send("Target.createTarget", {"url": search_url})
+        tid = r["result"]["targetId"]
+        r = cdp.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
+        sid = r["result"]["sessionId"]
+
+        print(f"打开 BOSS 搜索页: {LOGIN_PROBE_QUERY} @ {city_name}")
+        time.sleep(4)
+        api_url = f"{API_JOB_LIST_PATH}?scene=1&query={quote(LOGIN_PROBE_QUERY)}&city={city_code}&page=1&pageSize=5"
+        api_js = FETCH_API_JS_TEMPLATE.replace("__API_URL__", api_url)
+        jobs = parse_jobs_eval_value(cdp.eval_js(api_js, sid))
+        cdp.send("Target.closeTarget", {"targetId": tid})
+        cdp.close()
+
+        if has_usable_smoke_jobs(jobs):
+            sample = next(job for job in jobs if job.get("salary") and job.get("job_link"))
+            print(f"✅ Smoke test 通过: {sample.get('title')} | {sample.get('salary')}")
+            return 0
+        print("❌ Smoke test 未拿到可用职位；请检查登录态或 BOSS API 返回")
+        return 1
+    except (requests.ConnectionError, requests.Timeout, KeyError,
+            json.JSONDecodeError, websocket.WebSocketException, TimeoutError) as e:
+        print(f"❌ Smoke test 失败: {e}")
+        return 1
+
+
 # ============================================================
 # --check 环境检查
 # ============================================================
@@ -1228,57 +1429,122 @@ def is_cdp_ready(cdp_port):
         return False
 
 
-def chrome_pids_for_user_data_dir(user_data_dir):
-    """Return Chrome PIDs using the given user-data-dir."""
+def is_chrome_command(command):
+    lower = (command or "").lower()
+    return any(token in lower for token in (
+        "google chrome",
+        "google-chrome",
+        "chromium",
+        "chrome.exe",
+    ))
+
+
+def normalize_profile_path(path):
+    clean = (path or "").strip("\"'")
+    if platform.system() == "Windows":
+        return ntpath.normcase(ntpath.normpath(clean))
+    return os.path.realpath(os.path.expanduser(clean))
+
+
+def extract_user_data_dir(command):
+    match = re.search(r"--user-data-dir=(\"[^\"]+\"|'[^']+'|\S+)", command or "")
+    if not match:
+        return None
+    return match.group(1).strip("\"'")
+
+
+def iter_chrome_process_commands():
+    """Return (pid, command line) tuples for Chrome-like browser processes."""
+    if platform.system() == "Windows":
+        ps_script = (
+            "Get-CimInstance Win32_Process -Filter \"name = 'chrome.exe'\" | "
+            "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+        )
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return []
+        if not r.stdout.strip():
+            return []
+        try:
+            data = json.loads(r.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        if not isinstance(data, list):
+            return []
+        processes = []
+        for item in data:
+            command = item.get("CommandLine") or ""
+            if not is_chrome_command(command):
+                continue
+            try:
+                processes.append((int(item.get("ProcessId")), command))
+            except (TypeError, ValueError):
+                continue
+        return processes
+
     try:
         r = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5)
     except Exception:
         return []
 
-    pids = []
-    real_dir = os.path.realpath(user_data_dir)
+    processes = []
     for line in r.stdout.splitlines():
-        if "Google Chrome" not in line and "google-chrome" not in line and "chromium" not in line:
-            continue
-        if "--user-data-dir=" not in line:
+        if not is_chrome_command(line):
             continue
         try:
             pid_text, command = line.strip().split(None, 1)
             pid = int(pid_text)
         except ValueError:
             continue
-        match = re.search(r"--user-data-dir=(\"[^\"]+\"|'[^']+'|\S+)", command)
-        if not match:
+        processes.append((pid, command))
+    return processes
+
+
+def chrome_pids_for_user_data_dir(user_data_dir):
+    """Return Chrome PIDs using the given user-data-dir."""
+    pids = []
+    real_dir = normalize_profile_path(user_data_dir)
+    for pid, command in iter_chrome_process_commands():
+        if "--user-data-dir=" not in command:
             continue
-        path = match.group(1).strip("\"'")
-        if os.path.realpath(path) == real_dir:
+        path = extract_user_data_dir(command)
+        if path and normalize_profile_path(path) == real_dir:
             pids.append(pid)
     return pids
 
 
 def chrome_user_data_dirs_for_cdp_port(cdp_port):
     """Return user-data-dir paths for Chrome processes using the given CDP port."""
-    try:
-        r = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5)
-    except Exception:
-        return []
-
     dirs = []
     port_arg = f"--remote-debugging-port={cdp_port}"
-    for line in r.stdout.splitlines():
-        if port_arg not in line:
+    for _pid, command in iter_chrome_process_commands():
+        if port_arg not in command:
             continue
-        if "Google Chrome" not in line and "google-chrome" not in line and "chromium" not in line:
-            continue
-        match = re.search(r"--user-data-dir=(\"[^\"]+\"|'[^']+'|\S+)", line)
-        if match:
-            dirs.append(match.group(1).strip("\"'"))
+        path = extract_user_data_dir(command)
+        if path:
+            dirs.append(path)
     return dirs
 
 
 def cdp_port_uses_profile(cdp_port, cdp_data_dir):
-    expected = os.path.realpath(cdp_data_dir)
-    return any(os.path.realpath(path) == expected for path in chrome_user_data_dirs_for_cdp_port(cdp_port))
+    expected = normalize_profile_path(cdp_data_dir)
+    return any(normalize_profile_path(path) == expected for path in chrome_user_data_dirs_for_cdp_port(cdp_port))
+
+
+def terminate_process(pid, force=False):
+    if platform.system() == "Windows":
+        cmd = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            cmd.append("/F")
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return
+    os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
 
 
 def stop_cdp_chrome(cdp_data_dir):
@@ -1289,7 +1555,7 @@ def stop_cdp_chrome(cdp_data_dir):
 
     for pid in pids:
         try:
-            os.kill(pid, signal.SIGTERM)
+            terminate_process(pid, force=False)
         except ProcessLookupError:
             pass
     for _ in range(10):
@@ -1299,7 +1565,7 @@ def stop_cdp_chrome(cdp_data_dir):
 
     for pid in chrome_pids_for_user_data_dir(cdp_data_dir):
         try:
-            os.kill(pid, signal.SIGKILL)
+            terminate_process(pid, force=True)
         except ProcessLookupError:
             pass
     time.sleep(0.5)
@@ -1317,6 +1583,22 @@ def wait_for_cdp(cdp_port, timeout=30):
     print(f"\n❌ 等待超时 ({timeout}s)，CDP 未就绪")
     print(f"   请手动检查 Chrome 是否启动，端口 {cdp_port} 是否开放")
     return False
+
+
+def launch_chrome(cmd):
+    kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if platform.system() == "Windows":
+        creationflags = 0
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        if creationflags:
+            kwargs["creationflags"] = creationflags
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(cmd, **kwargs)
 
 
 def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False,
@@ -1364,8 +1646,7 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False,
         "--no-default-browser-check",
         "--remote-allow-origins=*",
     ]
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
+    launch_chrome(cmd)
 
     if not wait_for_cdp(cdp_port):
         return 1
@@ -1413,7 +1694,7 @@ def main():
   %(prog)s --keyword "Java 风控" --pages 3 --detail --analysis
 
   # 只分析已有数据
-  %(prog)s --input data/boss/boss_jobs_20260609.json --analysis
+  %(prog)s --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260609_1200.json --analysis --no-detail
 
   # 导出 CSV
   %(prog)s --keyword "Java 风控" --pages 3 --format csv
@@ -1423,6 +1704,9 @@ def main():
 
   # 环境检查
   %(prog)s --check
+
+  # 浏览器/API smoke test
+  %(prog)s --smoke-test
 
   # 启动 Chrome CDP
   %(prog)s --setup-chrome
@@ -1454,9 +1738,13 @@ def main():
     p.add_argument("--max-details", type=int, default=None, help="最多抓几个详情")
     p.add_argument("--analysis", action="store_true", help="输出分析报告")
     p.add_argument("--input", default=None, help="从已有 JSON 文件读取（跳过抓取）")
+    p.add_argument("--allow-dom-fallback", action="store_true",
+                   help="API 无数据时允许降级 DOM 提取（薪资可能受字体反爬影响，默认关闭）")
 
     # 工具命令
     p.add_argument("--check", action="store_true", help="运行环境诊断检查")
+    p.add_argument("--smoke-test", action="store_true",
+                   help="用真实 Chrome/CDP 跑一次 BOSS 搜索 API smoke test（不写结果文件）")
     p.add_argument("--setup-chrome", action="store_true",
                    help="自动启动 Chrome CDP 调试模式")
     p.add_argument("--copy-login-state", action="store_true",
@@ -1473,6 +1761,9 @@ def main():
     # --check 模式
     if args.check:
         sys.exit(run_check(args.cdp_port))
+
+    if args.smoke_test:
+        sys.exit(run_smoke_test(args.cdp_port))
 
     # --setup-chrome 模式
     if args.setup_chrome:
@@ -1516,6 +1807,7 @@ def main():
         list_data = scrape_list(
             args.keyword, args.city, args.pages, filters, args.output,
             cdp_port=args.cdp_port, fmt=args.format,
+            allow_dom_fallback=args.allow_dom_fallback,
         )
 
     # 合并外部文件
@@ -1550,10 +1842,7 @@ def main():
     if args.analysis:
         # 如果有详情文件也加载
         if not details:
-            detail_path = f"data/boss/boss_details_{datetime.now().strftime('%Y%m%d')}.json"
-            if os.path.exists(detail_path):
-                with open(detail_path, encoding="utf-8") as f:
-                    details = json.load(f)
+            details = load_existing_details(args.input, args.detail_output)
         analyze(list_data, details, search_keyword=args.keyword)
 
 

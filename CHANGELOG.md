@@ -14,6 +14,8 @@
 - `--format csv` 同时导出列表 CSV 和详情 CSV
 - `--merge` 合并多次抓取结果（去重）
 - `--cdp-port` 自定义 CDP 端口（默认 9222）
+- `--smoke-test` 用真实 Chrome/CDP 跑一次搜索 API smoke test，不写结果文件
+- `--allow-dom-fallback` 显式允许 API 失败时降级 DOM 提取
 - `--version` 查看版本号
 - 登录态检测：未登录时给出明确提示
 - 分析报告技术词动态提取（不再硬编码）
@@ -26,8 +28,13 @@
 - 清除所有 bare except，改为具体异常类型
 - API 路径提取为常量，方便维护
 - DOM fallback 标记为 deprecated
+- DOM fallback 默认关闭，避免把字体反爬后的薪资写进结果
+- API 错误行不再被当成职位数据处理
 - 详情输出保留 `job_id`、`job_link` 和 `salary_source`
-- Linux 平台支持（Chrome 路径 + 隔离 profile）
+- 详情页访问会带上列表 API 返回的 `securityId` / `lid` 上下文
+- `--input ... --analysis --no-detail` 会从 `--detail-output`、同目录同时间戳详情文件、默认结果目录最新详情文件中加载详情
+- 登录态检测改为多关键词、多城市 probe，但仍要求接口返回明文薪资
+- Linux / Windows 平台支持（Chrome 路径 + 隔离 profile）
 - pyproject.toml 版本锁定依赖
 
 ### 安全

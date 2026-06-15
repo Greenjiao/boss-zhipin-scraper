@@ -10,7 +10,7 @@
 - 增量写入（异常退出不丢数据）
 - 一键环境检查 + 持久隔离 Chrome CDP profile
 - 多维筛选（规模、融资、薪资、经验、学历、行业）
-- macOS + Linux 支持
+- macOS + Linux + Windows 支持
 
 ## 安装
 
@@ -77,6 +77,9 @@ python3 scripts/boss_cdp_raw.py --setup-chrome
 # 3. 检查环境
 python3 scripts/boss_cdp_raw.py --check
 
+# 可选：真实浏览器/API smoke test（不写结果文件）
+python3 scripts/boss_cdp_raw.py --smoke-test
+
 # 4. 抓取
 python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
 ```
@@ -93,7 +96,9 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --f
 | `--no-detail` | 不抓取详情页 |
 | `--analysis` | 分析报告 |
 | `--merge FILE` | 合并已有数据（按 job_id 去重） |
+| `--allow-dom-fallback` | API 无数据时允许降级 DOM 提取；默认关闭，薪资可能不可信 |
 | `--check` | 环境检查（CDP + 依赖 + 登录态） |
+| `--smoke-test` | 用真实 Chrome/CDP 跑一次 BOSS 搜索 API smoke test，不写结果文件 |
 | `--setup-chrome` | 一键启动 Chrome CDP（持久隔离 profile） |
 | `--copy-login-state` | 手动导入主 Chrome 的 Local State + Cookie 相关文件到隔离 profile（默认、首次启动、重复启动都不复制） |
 | `--reset-chrome-profile` | 重建 BOSS 专用 Chrome profile，会清除此专用浏览器内的登录态 |
@@ -123,7 +128,12 @@ boss-zhipin-scraper/
 1. 通过 Chrome DevTools Protocol (CDP) 连接到已打开的 Chrome
 2. 在 BOSS直聘页面内注入 JS，用同步 XHR 调用搜索 API
 3. API 返回明文 `salaryDesc`，绕过前端字体反爬
-4. 每页抓完立即写入文件，按 `job_id` 去重
+4. 列表 API 保留 `securityId` / `lid` 等上下文，进入详情页时带上这些参数
+5. 每页抓完立即写入文件，按 `job_id` 去重
+
+默认不会使用 DOM 提取列表，因为 DOM 薪资可能受字体反爬影响。只有明确传 `--allow-dom-fallback` 时，API 无数据才会降级 DOM。
+
+`--input ... --analysis --no-detail` 会优先加载 `--detail-output`，其次加载与输入列表同目录、同时间戳的 `boss_details_*.json`，最后查找 `~/.boss-zhipin-scraper/job-result` 下最新详情文件。
 
 ## Chrome profile 安全策略
 

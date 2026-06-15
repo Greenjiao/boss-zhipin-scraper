@@ -1,5 +1,6 @@
 import importlib.util
 import csv
+import json
 import pathlib
 import subprocess
 import sys
@@ -75,6 +76,140 @@ class ChromeSetupTests(unittest.TestCase):
         self.assertEqual(detail["link"], job["job_link"])
         self.assertEqual(detail["salary"], "30-60K")
         self.assertEqual(detail["salary_source"], "api")
+
+    def test_detail_url_adds_security_context_without_changing_job_link(self):
+        module = load_module()
+        job = {
+            "job_link": "https://www.zhipin.com/job_detail/abc.html",
+            "security_id": "sec value",
+            "lid": "lid-123",
+        }
+
+        detail_url = module.build_detail_url(job)
+
+        self.assertEqual(job["job_link"], "https://www.zhipin.com/job_detail/abc.html")
+        self.assertEqual(
+            detail_url,
+            "https://www.zhipin.com/job_detail/abc.html?lid=lid-123&securityId=sec+value",
+        )
+
+    def test_api_extraction_keeps_detail_context_fields(self):
+        module = load_module()
+
+        self.assertIn("security_id: j.securityId", module.FETCH_API_JS_TEMPLATE)
+        self.assertIn("lid: j.lid", module.FETCH_API_JS_TEMPLATE)
+        self.assertIn("encrypt_job_id: j.encryptJobId", module.FETCH_API_JS_TEMPLATE)
+
+    def test_dom_fallback_is_opt_in(self):
+        module = load_module()
+
+        self.assertFalse(module.should_use_dom_fallback([], allow_dom_fallback=False))
+        self.assertTrue(module.should_use_dom_fallback([], allow_dom_fallback=True))
+        self.assertFalse(module.should_use_dom_fallback([{"title": "Java"}], allow_dom_fallback=True))
+
+    def test_api_job_parser_rejects_error_rows(self):
+        module = load_module()
+
+        self.assertEqual(module.parse_api_jobs_eval_value(json.dumps([{"error": 403}])), [])
+        self.assertEqual(
+            module.parse_api_jobs_eval_value(json.dumps([{"title": "Java", "job_link": "https://example.com"}])),
+            [{"title": "Java", "job_link": "https://example.com"}],
+        )
+
+    def test_login_probe_tries_multiple_urls_until_plaintext_salary(self):
+        module = load_module()
+        cdp = mock.Mock()
+        cdp.eval_js.side_effect = [
+            json.dumps({"code": 0, "zpData": {"jobList": [{"jobName": "Java", "salaryDesc": ""}]}}),
+            json.dumps({"code": 0, "zpData": {"jobList": [{"jobName": "AI", "salaryDesc": "20-40K"}]}}),
+        ]
+
+        self.assertTrue(module.probe_login_state(cdp, "sid"))
+        self.assertEqual(cdp.eval_js.call_count, 2)
+
+    def test_find_latest_detail_file_uses_default_result_dir(self):
+        module = load_module()
+        with tempfile_profile() as paths:
+            result_dir = paths["cdp_profile"] / "job-result"
+            result_dir.mkdir(parents=True)
+            older = result_dir / "boss_details_20260612_1000.json"
+            newer = result_dir / "boss_details_20260612_1100.json"
+            older.write_text("[]", encoding="utf-8")
+            newer.write_text("[]", encoding="utf-8")
+
+            self.assertEqual(module.find_latest_detail_file(str(result_dir)), str(newer))
+
+    def test_existing_detail_loader_prefers_sibling_detail_file(self):
+        module = load_module()
+        with tempfile_profile() as paths:
+            result_dir = paths["cdp_profile"] / "job-result"
+            result_dir.mkdir(parents=True)
+            list_path = result_dir / "boss_jobs_20260612_1100.json"
+            detail_path = result_dir / "boss_details_20260612_1100.json"
+            list_path.write_text('{"jobs":[]}', encoding="utf-8")
+            detail_path.write_text('[{"job_id":"abc123"}]', encoding="utf-8")
+
+            details = module.load_existing_details(
+                input_path=str(list_path),
+                detail_output=None,
+                result_dir=str(result_dir),
+            )
+
+        self.assertEqual(details, [{"job_id": "abc123"}])
+
+    def test_windows_default_paths_use_localappdata(self):
+        module = load_module()
+        env = {
+            "LOCALAPPDATA": r"C:\Users\leon\AppData\Local",
+            "PROGRAMFILES": r"C:\Program Files",
+            "PROGRAMFILES(X86)": r"C:\Program Files (x86)",
+        }
+        expected_chrome = r"C:\Users\leon\AppData\Local\Google\Chrome\Application\chrome.exe"
+        with mock.patch.object(module.platform, "system", return_value="Windows"), \
+                mock.patch.dict(module.os.environ, env, clear=False), \
+                mock.patch.object(module.os.path, "exists", side_effect=lambda p: p == expected_chrome):
+            self.assertEqual(module.get_default_chrome_path(), expected_chrome)
+            self.assertEqual(
+                module.get_default_profile_dir(),
+                r"C:\Users\leon\AppData\Local\Google\Chrome\User Data",
+            )
+
+    def test_windows_process_parsing_matches_user_data_dir_and_cdp_port(self):
+        module = load_module()
+        ps_json = json.dumps([{
+            "ProcessId": 456,
+            "CommandLine": (
+                r'"C:\Program Files\Google\Chrome\Application\chrome.exe" '
+                r'--remote-debugging-port=9333 '
+                r'--user-data-dir="C:\Users\leon\.boss-zhipin-scraper\chrome-profile"'
+            ),
+        }])
+        with mock.patch.object(module.platform, "system", return_value="Windows"), \
+                mock.patch.object(module.subprocess, "run", return_value=type("Completed", (), {"stdout": ps_json, "returncode": 0})()):
+            self.assertEqual(
+                module.chrome_pids_for_user_data_dir(r"C:\Users\leon\.boss-zhipin-scraper\chrome-profile"),
+                [456],
+            )
+            self.assertEqual(
+                module.chrome_user_data_dirs_for_cdp_port(9333),
+                [r"C:\Users\leon\.boss-zhipin-scraper\chrome-profile"],
+            )
+
+    def test_smoke_jobs_require_api_salary_and_link(self):
+        module = load_module()
+
+        self.assertTrue(module.has_usable_smoke_jobs([{
+            "title": "AI Engineer",
+            "salary": "30-60K",
+            "salary_source": "api",
+            "job_link": "https://www.zhipin.com/job_detail/abc.html",
+        }]))
+        self.assertFalse(module.has_usable_smoke_jobs([{
+            "title": "AI Engineer",
+            "salary": "",
+            "salary_source": "api_empty",
+            "job_link": "https://www.zhipin.com/job_detail/abc.html",
+        }]))
 
     def test_write_detail_csv_exports_detail_fields(self):
         module = load_module()
