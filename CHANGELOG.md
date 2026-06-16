@@ -1,5 +1,22 @@
 # Changelog
 
+## 未发布
+
+### 修复
+- 修正城市码：天津 `101030100`、沈阳 `101070100`（原均误用 `101060100`）
+- `require_runtime_dependencies` 缺失依赖时同时提示 uv 和 pip 安装方式
+- `--merge` 现在会合并旧详情并落盘到 `--detail-output`（之前只合并列表，详情丢失）
+- API URL filter 改用 `urlencode`（原字符串拼接，filter 值含特殊字符会出错）
+
+### 变更
+- 平台支持声明改为 macOS + Linux（Windows 代码分支保留但未经实测，不再声称支持，避免过度承诺）
+- `pyproject.toml` 删除空的 `[csv]` extra（csv 是标准库）
+- SKILL.md 脚本路径解析改用 Python `os.path.realpath`（macOS 自带 `readlink` 无 `-f`）
+
+### 新增
+- 版本号一致性测试：校验脚本、pyproject.toml、SKILL.md、README.md 四处版本同步
+- CONTRIBUTING.md 贡献指南
+
 ## v2.0.0 (2026-06)
 
 ### 新功能

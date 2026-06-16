@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
 ![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)
 
 通过 Chrome CDP 协议抓取 BOSS直聘职位数据的命令行工具 + Hermes Agent Skill。
@@ -40,7 +40,7 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --a
 - 增量写入（异常退出不丢数据）
 - 一键环境检查 + 持久隔离 Chrome CDP profile
 - 多维筛选（规模、融资、薪资、经验、学历、行业）
-- macOS + Linux + Windows 支持
+- macOS + Linux 支持（Windows 代码分支已预留，未经实测，不保证可用）
 
 ## 安装
 

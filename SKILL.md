@@ -4,7 +4,7 @@ description: "Scrape BOSS直聘 (job listing site) via Chrome CDP. Searches jobs
 version: 2.0.0
 author: eatmoreduck
 license: MIT
-platforms: [macos, linux, windows]
+platforms: [macos, linux]
 metadata:
   hermes:
     tags: [scraper, jobs, career, cdp, chrome, zhipin, boss直聘]
@@ -29,7 +29,7 @@ metadata:
 用以下方式找到脚本（macOS 自带的 `readlink` 不支持 `-f`，用 Python 解析路径更通用）：
 
 ```bash
-# 方法 1：已知 skill 安装目录（推荐，跨平台）
+# 方法 1：已知 skill 安装目录（推荐，macOS/Linux 通用）
 SKILL_DIR="$(python3 -c "import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))" "$0")"
 SCRIPT_PATH="$SKILL_DIR/scripts/boss_cdp_raw.py"
 
