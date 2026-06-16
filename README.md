@@ -1,8 +1,38 @@
 # BOSS直聘职位抓取工具 v2.0
 
+![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
+![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)
+
 通过 Chrome CDP 协议抓取 BOSS直聘职位数据的命令行工具 + Hermes Agent Skill。
 
-## 特性
+> 📌 **一句话介绍**：不用 Selenium/Playwright，直接通过 Chrome DevTools Protocol 连接本地已登录的 Chrome，复用真实登录态调搜索 API，输出含明文薪资的 JSON/CSV，并生成薪资分布和技能词频分析报告。
+
+<!-- 建议在此放一张终端运行截图或 GIF 演示，转化率影响最大 -->
+<!-- 录好后把图片放到仓库内（如根目录 demo.gif，不要放 docs/ 因为已被 gitignore），再替换下面这行： -->
+<!-- ![demo](demo.gif) -->
+
+---
+
+## 🚀 30 秒快速开始
+
+```bash
+# 1. 克隆 + 装依赖
+git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
+cd boss-zhipin-scraper
+pip install -r requirements.txt          # 或 uv sync
+
+# 2. 启动隔离 Chrome 并登录（只需一次，登录态持久保存）
+python3 scripts/boss_cdp_raw.py --setup-chrome
+
+# 3. 抓取 + 分析
+python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --analysis
+```
+
+抓完直接拿到：薪资分布、经验要求、高频技能词、简历建议。
+
+## ✨ 特性
 
 - 明文薪资（API 模式，绕过字体反爬）
 - JSON / CSV 双格式输出

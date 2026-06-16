@@ -26,11 +26,12 @@ metadata:
 
 **运行任何命令前，必须先确定脚本的绝对路径。**
 
-用以下方式找到脚本：
+用以下方式找到脚本（macOS 自带的 `readlink` 不支持 `-f`，用 Python 解析路径更通用）：
 
 ```bash
-# 方法 1：已知 skill 安装目录（推荐）
-SCRIPT_PATH="$(dirname "$(readlink -f "$0")")/scripts/boss_cdp_raw.py"
+# 方法 1：已知 skill 安装目录（推荐，跨平台）
+SKILL_DIR="$(python3 -c "import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))" "$0")"
+SCRIPT_PATH="$SKILL_DIR/scripts/boss_cdp_raw.py"
 
 # 方法 2：搜索 hermes skills 目录
 SCRIPT_PATH=$(find ~/.hermes/skills -name "boss_cdp_raw.py" -type f 2>/dev/null | head -1)
