@@ -2,6 +2,7 @@ import importlib.util
 import csv
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import unittest
@@ -404,6 +405,66 @@ class tempfile_profile:
 def fake_run(calls, *args, **kwargs):
     calls["run"].append(args[0])
     return type("Completed", (), {"stdout": "", "returncode": 0})()
+
+
+ROOT_PATH = SCRIPT_PATH.parents[1]
+
+
+def _normalize_version(raw):
+    """统一版本号格式，去掉 'v' 前缀和 patch 段，只比较 major.minor。
+
+    README/SKILL.md 里常写成 'v2.0'，pyproject/脚本里是 '2.0.0'，
+    只要 major.minor 一致即视为同步，避免 patch 号差异造成误报。
+    """
+    text = str(raw).strip().lstrip("vV")
+    parts = text.split(".")
+    major = parts[0] if len(parts) > 0 else "0"
+    minor = parts[1] if len(parts) > 1 else "0"
+    return f"{major}.{minor}"
+
+
+class VersionConsistencyTests(unittest.TestCase):
+    """校验版本号在 README / pyproject.toml / SKILL.md / 脚本四处保持一致。
+
+    发版时只改一处会漏掉其他几处，这个测试在 CI/本地跑测试时就能拦住。
+    """
+
+    def _read_text(self, name):
+        return (ROOT_PATH / name).read_text(encoding="utf-8")
+
+    def test_script_version_is_defined(self):
+        module = load_module()
+        self.assertTrue(getattr(module, "__version__", None),
+                        "脚本缺少 __version__")
+
+    def test_versions_are_in_sync_across_all_sources(self):
+        module = load_module()
+        script_ver = _normalize_version(module.__version__)
+
+        # pyproject.toml: version = "2.0.0"
+        pyproject = self._read_text("pyproject.toml")
+        m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+        self.assertIsNotNone(m, "pyproject.toml 未找到 version 字段")
+        pyproject_ver = _normalize_version(m.group(1))
+
+        # SKILL.md frontmatter: version: 2.0.0
+        skill = self._read_text("SKILL.md")
+        m = re.search(r"^version:\s*([^\n]+)$", skill, re.MULTILINE)
+        self.assertIsNotNone(m, "SKILL.md 未找到 version 字段")
+        skill_ver = _normalize_version(m.group(1))
+
+        # README.md 标题: # ... v2.0
+        readme = self._read_text("README.md")
+        m = re.search(r"v(\d+\.\d+(?:\.\d+)?)", readme)
+        self.assertIsNotNone(m, "README.md 未找到版本号")
+        readme_ver = _normalize_version(m.group(1))
+
+        self.assertEqual(script_ver, pyproject_ver,
+                         f"脚本({script_ver}) 与 pyproject.toml({pyproject_ver}) 版本不一致")
+        self.assertEqual(script_ver, skill_ver,
+                         f"脚本({script_ver}) 与 SKILL.md({skill_ver}) 版本不一致")
+        self.assertEqual(script_ver, readme_ver,
+                         f"脚本({script_ver}) 与 README.md({readme_ver}) 版本不一致")
 
 
 if __name__ == "__main__":
