@@ -39,7 +39,7 @@ import logging
 import ntpath
 from datetime import datetime
 from collections import Counter
-from urllib.parse import quote, urlencode, urlparse, urlunparse, parse_qsl
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 websocket = None
 requests = None
@@ -146,7 +146,10 @@ def require_runtime_dependencies(*names):
         except ImportError:
             missing.append("websocket-client")
     if missing:
-        print(f"需要安装依赖: uv add {' '.join(missing)}")
+        print(f"缺少依赖: {' '.join(missing)}")
+        print("请安装（任选其一）:")
+        print(f"  uv add {' '.join(missing)}")
+        print(f"  pip install {' '.join(missing)}")
         return False
     return True
 
@@ -161,8 +164,8 @@ CITY_MAP = {
     "长沙": "101190100", "福州": "101300100", "武汉": "101170100",
     "合肥": "101230100", "济南": "101240100", "大连": "101150100",
     "青岛": "101160100", "宁波": "101180100", "厦门": "101190200",
-    "天津": "101060100", "苏州": "101190400", "郑州": "101140100",
-    "东莞": "101281600", "佛山": "101280800", "沈阳": "101060100",
+    "天津": "101030100", "苏州": "101190400", "郑州": "101140100",
+    "东莞": "101281600", "佛山": "101280800", "沈阳": "101070100",
 }
 
 SCALE_MAP = {
@@ -651,6 +654,54 @@ def merge_jobs(external_path, new_jobs):
     return merged
 
 
+def merge_details(external_path, new_details):
+    """从外部 JSON 加载详情，与 new_details 按 job_id 合并去重。
+
+    详情文件本身可能是列表结构（scrape_details 输出）或带 jobs/details 键的字典，
+    这里都做兼容。优先保留 new_details 中的同名记录（更新覆盖旧值）。
+
+    Args:
+        external_path: 已有详情 JSON 文件路径
+        new_details: 新抓取的详情列表（可为空）
+
+    Returns:
+        合并后的详情列表
+    """
+    if not external_path:
+        return new_details
+    try:
+        with open(external_path, "r", encoding="utf-8") as f:
+            old_data = json.load(f)
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        log.warning(f"无法加载合并详情文件 {external_path}: {e}")
+        return new_details
+
+    if isinstance(old_data, list):
+        old_details = old_data
+    elif isinstance(old_data, dict):
+        old_details = old_data.get("details") or old_data.get("jobs") or []
+    else:
+        old_details = []
+
+    merged = merge_details_from_lists(old_details, new_details)
+    print(f"合并详情: 旧文件 {len(old_details)} 条 + 新抓取 {len(new_details)} 条 = {len(merged)} 条")
+    return merged
+
+
+def merge_details_from_lists(old_details, new_details):
+    """把两份详情列表按 job_id 合并去重，new_details 优先（同 id 用新覆盖旧）。"""
+    by_id = {}
+    for d in old_details:
+        jid = d.get("job_id", "") if isinstance(d, dict) else ""
+        if jid:
+            by_id[jid] = d
+    for d in new_details:
+        jid = d.get("job_id", "") if isinstance(d, dict) else ""
+        if jid:
+            by_id[jid] = d
+    return list(by_id.values())
+
+
 # ============================================================
 # 构建搜索 URL
 # ============================================================
@@ -838,10 +889,17 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 human_mouse_jitter(cdp, sid)
 
             # 优先用 API 获取明文数据
-            api_url = f"{API_JOB_LIST_PATH}?scene=1&query={quote(keyword)}&city={city_code}&page={pg}&pageSize=30"
+            api_params = {
+                "scene": "1",
+                "query": keyword,
+                "city": city_code,
+                "page": pg,
+                "pageSize": 30,
+            }
             for k, v in filters.items():
                 if v:
-                    api_url += f"&{k}={v}"
+                    api_params[k] = v
+            api_url = f"{API_JOB_LIST_PATH}?{urlencode(api_params)}"
             api_js = FETCH_API_JS_TEMPLATE.replace("__API_URL__", api_url)
             val = cdp.eval_js(api_js, sid)
 
@@ -1291,7 +1349,7 @@ def run_smoke_test(cdp_port=DEFAULT_CDP_PORT):
 
         print(f"打开 BOSS 搜索页: {LOGIN_PROBE_QUERY} @ {city_name}")
         time.sleep(4)
-        api_url = f"{API_JOB_LIST_PATH}?scene=1&query={quote(LOGIN_PROBE_QUERY)}&city={city_code}&page=1&pageSize=5"
+        api_url = f"{API_JOB_LIST_PATH}?{urlencode({'scene': '1', 'query': LOGIN_PROBE_QUERY, 'city': city_code, 'page': 1, 'pageSize': 5})}"
         api_js = FETCH_API_JS_TEMPLATE.replace("__API_URL__", api_url)
         jobs = parse_jobs_eval_value(cdp.eval_js(api_js, sid))
         cdp.send("Target.closeTarget", {"targetId": tid})
@@ -1811,6 +1869,7 @@ def main():
         )
 
     # 合并外部文件
+    merged_details = None
     if args.merge:
         merged_jobs = merge_jobs(args.merge, list_data.get("jobs", []))
         list_data["jobs"] = merged_jobs
@@ -1829,6 +1888,8 @@ def main():
             if args.format == "csv":
                 csv_path = args.output.rsplit(".", 1)[0] + ".csv"
                 write_csv(csv_path, merged_jobs)
+        # 同时加载旧详情，供后续详情抓取/分析合并（按 job_id 去重）
+        merged_details = merge_details(args.merge, [])
 
     # 抓详情
     details = None
@@ -1837,6 +1898,16 @@ def main():
             list_data, args.max_details, args.detail_output,
             cdp_port=args.cdp_port, fmt=args.format,
         )
+        # 若处于合并流程，把旧详情并入本次抓取结果并重新落盘，保证 --merge 后详情不丢失
+        if merged_details and args.detail_output:
+            details = merge_details_from_lists(merged_details, details)
+            os.makedirs(os.path.dirname(args.detail_output) or ".", exist_ok=True)
+            with open(args.detail_output, "w", encoding="utf-8") as f:
+                json.dump(details, f, ensure_ascii=False, indent=2)
+            print(f"合并详情已保存: {args.detail_output}")
+            if args.format == "csv":
+                detail_csv = args.detail_output.rsplit(".", 1)[0] + ".csv"
+                write_detail_csv(detail_csv, details)
 
     # 分析
     if args.analysis:
