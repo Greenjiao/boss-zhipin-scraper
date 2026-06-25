@@ -4,4 +4,8 @@ __pycache__/
 .git/
 __pycache__/
 docs/
+resume.txt
+_test.txt
 .idea
+.trae/
+.claude/

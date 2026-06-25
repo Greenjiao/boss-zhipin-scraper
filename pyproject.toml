@@ -1,24 +1,26 @@
 [project]
 name = "boss-zhipin-scraper"
-version = "2.0.0"
-description = "BOSS直聘职位抓取工具 — Chrome CDP + API 明文薪资"
+version = "2.1.0"
+description = "BOSS直聘职位抓取 + AI筛选 + 自动投递 — Chrome CDP + API 明文薪资"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [
     { name = "eatmoreduck" }
 ]
-keywords = ["zhipin", "boss", "scraper", "cdp", "jobs"]
+keywords = ["zhipin", "boss", "scraper", "cdp", "jobs", "ai", "screening", "auto-apply"]
 
 dependencies = [
     "websocket-client>=1.6.0,<2.0.0",
     "requests>=2.28.0,<3.0.0",
+    "flask>=3.0.0",
 ]
 
 [project.optional-dependencies]
 all = [
     "websocket-client>=1.6.0,<2.0.0",
     "requests>=2.28.0,<3.0.0",
+    "flask>=3.0.0",
 ]
 
 [project.scripts]

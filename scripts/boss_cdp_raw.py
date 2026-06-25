@@ -19,7 +19,7 @@ BOSS直聘职位抓取 + 分析 — 纯 CDP raw protocol
   uv run python3 scripts/boss_cdp_raw.py --version
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 import json
 import time
@@ -124,8 +124,16 @@ logging.basicConfig(
 log = logging.getLogger("boss_cdp")
 
 
-def default_output_path(kind):
-    filename = f"boss_{kind}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+def default_output_path(kind, city="", keyword=""):
+    parts = ["boss", kind]
+    if keyword:
+        # 文件名安全处理：替换空格和特殊字符
+        kw_clean = keyword.replace(" ", "_").replace("/", "_")[:20]
+        parts.append(kw_clean)
+    if city:
+        parts.append(city)
+    parts.append(datetime.now().strftime('%Y%m%d_%H%M'))
+    filename = "_".join(parts) + ".json"
     return os.path.join(DEFAULT_RESULT_DIR, filename)
 
 
@@ -405,16 +413,151 @@ EXTRACT_DETAIL_JS = """
 })()
 """
 
+# ============================================================
+# JD 噪音清洗
+# ============================================================
+
+JD_NOISE_MARKERS = [
+    # BOSS 安全警告文本（完整段落）
+    "BOSS直聘严禁用人单位和招聘者用户做出任何损害求职者合法权益的违法违规行为",
+    # BOSS 安全提示
+    "BOSS 安全提示",
+    # 公司介绍开始（后面是公司非JD内容）
+    "公司介绍",
+    "工商信息",
+    "公司名称",
+    "法定代表人",
+    # 工作地址
+    "工作地址",
+    "点击查看地图",
+    # 查看全部
+    "查看全部",
+    # 推荐/相关职位
+    "看过该职位的人还看了",
+    "精选职位",
+    "热门职位",
+    "推荐公司",
+    "热门企业",
+    # 页脚
+    "城市招聘",
+]
+
+NOISE_LINE_EXACT = {'微信扫码分享', '举报', 'BOSS 安全提示'}
+
+# 可能出现在行内的噪音片段（直接替换为空）
+NOISE_FRAGMENTS = ['微信扫码分享', '举报']
+
+
+def clean_jd_text(jd):
+    """从 BOSS 直聘 JD 文本中移除页面噪音。
+    策略：找到第一个噪音标记，截断其后的所有内容。
+    同时移除全文中出现的 UI 按钮噪音。
+    """
+    if not jd:
+        return jd
+
+    # 1. 移除全文中的噪音片段（替换为空）
+    for frag in NOISE_FRAGMENTS:
+        jd = jd.replace(frag, '')
+
+    # 2. 按行过滤：移除独立噪音行
+    lines = jd.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped in NOISE_LINE_EXACT or not stripped:
+            continue
+        cleaned_lines.append(line)
+    jd = '\n'.join(cleaned_lines)
+
+    # 3. 找到第一个噪音标记，截断后面的内容
+    first_noise_pos = len(jd)
+    for marker in JD_NOISE_MARKERS:
+        pos = jd.find(marker)
+        if pos >= 0 and pos < first_noise_pos:
+            first_noise_pos = pos
+
+    if first_noise_pos < len(jd):
+        jd = jd[:first_noise_pos]
+
+    # 4. 去除首尾空白和多余换行
+    jd = jd.strip()
+    while '\n\n\n' in jd:
+        jd = jd.replace('\n\n\n', '\n\n')
+
+    return jd
+
 
 # ============================================================
 # 解析城市参数（支持中文和代码）
+# 优先使用 citygroup.json（完整 ~400 城市），回退内置 CITY_MAP
 # ============================================================
+
+_city_name_to_code = None
+_city_code_to_name = None
+
+
+def _load_city_maps():
+    """懒加载：从 citygroup.json 构建 name→code / code→name 映射"""
+    global _city_name_to_code, _city_code_to_name
+    if _city_name_to_code is not None:
+        return _city_name_to_code, _city_code_to_name
+
+    _city_name_to_code = {}
+    _city_code_to_name = {}
+
+    # 先填充内置映射
+    for name, code in CITY_MAP.items():
+        _city_name_to_code[name] = code
+        _city_code_to_name[code] = name
+
+    # 再从 citygroup.json 加载（BOSS 官方城市列表）
+    citygroup_path = os.path.join(os.path.dirname(__file__), "citygroup.json")
+    if os.path.exists(citygroup_path):
+        try:
+            with open(citygroup_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for group in data.get("zpData", {}).get("cityGroup", []):
+                for city in group.get("cityList", []):
+                    name = city.get("name", "")
+                    code = str(city.get("code", ""))
+                    if name and code:
+                        _city_name_to_code[name] = code
+                        _city_code_to_name[code] = name
+                        # 去"市"后缀的别名
+                        if name.endswith("市"):
+                            alias = name[:-1]
+                            _city_name_to_code[alias] = code
+        except (json.JSONDecodeError, OSError, KeyError) as e:
+            log.warning("citygroup.json 加载失败: %s，回退内置映射", e)
+
+    return _city_name_to_code, _city_code_to_name
+
+
 def resolve_city(city_input):
-    if city_input in CITY_MAP:
-        return city_input, CITY_MAP[city_input]
-    if city_input in CITY_R:
-        return CITY_R[city_input], city_input
-    return city_input, city_input
+    """城市名→城市代码，支持中文名/代码"""
+    city = (city_input or "").strip()
+    if not city:
+        return city, "100010000"  # 全国
+    # 先查内置快速映射
+    if city in CITY_MAP:
+        return city, CITY_MAP[city]
+    if city in CITY_R:
+        return CITY_R[city], city
+
+    # 再查完整 citygroup
+    name_map, code_map = _load_city_maps()
+    if city in name_map:
+        return city, name_map[city]
+    if city in code_map:
+        return code_map[city], city
+
+    # 去市/省后缀再匹配
+    stripped = city.replace("市", "").replace("省", "").strip()
+    if stripped in name_map:
+        return city, name_map[stripped]
+
+    return city, city
 
 
 def is_logged_in_search_response(data):
@@ -804,13 +947,15 @@ def load_existing_details(input_path=None, detail_output=None, result_dir=DEFAUL
 # 抓取列表
 # ============================================================
 def scrape_list(keyword, city_input, max_pages, filters, output_path,
-                cdp_port=DEFAULT_CDP_PORT, fmt="json", allow_dom_fallback=False):
+                cdp_port=DEFAULT_CDP_PORT, fmt="json", allow_dom_fallback=False,
+                page_gap="12-22", page_size=30):
     city_name, city_code = resolve_city(city_input)
     cdp = CDPSession(cdp_port)
     all_jobs = []
+    pg_min, pg_max = _parse_gap(page_gap, 12, 22)
     seen = set()
     if not output_path:
-        output_path = default_output_path("jobs")
+        output_path = default_output_path("jobs", city=city_name, keyword=keyword)
 
     # 显示筛选条件
     filter_desc = []
@@ -894,7 +1039,7 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 "query": keyword,
                 "city": city_code,
                 "page": pg,
-                "pageSize": 30,
+                "pageSize": page_size,
             }
             for k, v in filters.items():
                 if v:
@@ -954,8 +1099,8 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 }, all_jobs)
 
             if pg < max_pages:
-                d = random.uniform(12, 22)
-                print(f"  翻页等待 {d:.0f}s...\n")
+                d = random.uniform(pg_min, pg_max)
+                print(f"  翻页等待 {d:.1f}s...\n")
                 time.sleep(d)
 
     except KeyboardInterrupt:
@@ -1006,19 +1151,25 @@ def build_detail_record(job, extracted):
         "job_link": link,
         "link": link,
         "skill_tags": extracted.get("tags", []),
-        "jd": extracted.get("jd", ""),
+        "jd": clean_jd_text(extracted.get("jd", "")),
     }
 
 
 def scrape_details(list_data, max_details=None, output_path=None,
-                   cdp_port=DEFAULT_CDP_PORT, fmt="json"):
+                   cdp_port=DEFAULT_CDP_PORT, fmt="json", detail_gap="10-25",
+                   load_gap="5-10", scroll_gap="2-5"):
     jobs = list_data.get("jobs", [])
     if max_details:
         jobs = jobs[:max_details]
     if not output_path:
-        output_path = default_output_path("details")
+        kw = list_data.get("keyword", "") or ""
+        city = list_data.get("city", "") or ""
+        output_path = default_output_path("details", city=city, keyword=kw)
 
     print(f"\n=== 抓取岗位详情 ({len(jobs)} 个) ===\n")
+    dg_min, dg_max = _parse_gap(detail_gap, 10, 25)
+    lg_min, lg_max = _parse_gap(load_gap, 5, 10)
+    sg_min, sg_max = _parse_gap(scroll_gap, 2, 5)
     results = []
     seen_links = set()
 
@@ -1050,7 +1201,7 @@ def scrape_details(list_data, max_details=None, output_path=None,
         detail_url = build_detail_url(job)
         ws.send("Page.navigate", {"url": detail_url}, sid)
         print(f"  加载页面...")
-        time.sleep(random.uniform(5, 10))
+        time.sleep(random.uniform(lg_min, lg_max))
 
         # 模拟人类阅读详情页的滚动行为
         scroll_count = random.randint(3, 7)
@@ -1064,9 +1215,9 @@ def scrape_details(list_data, max_details=None, output_path=None,
             ws.eval_js(f"window.scrollBy(0,{delta})", sid)
             # 有时快滚，有时停下来"阅读"
             if random.random() < 0.35:
-                time.sleep(random.uniform(2.0, 5.0))
+                time.sleep(random.uniform(sg_min, sg_max))
             else:
-                time.sleep(random.uniform(0.8, 1.8))
+                time.sleep(random.uniform(max(0.3, sg_min / 3), max(1.0, sg_max / 3)))
 
         # 偶尔模拟鼠标移动
         if random.random() < 0.5:
@@ -1099,9 +1250,9 @@ def scrape_details(list_data, max_details=None, output_path=None,
 
         ws.send("Target.closeTarget", {"targetId": tid})
         ws.close()
-        # 详情页间隔加大，随机 10-25 秒
-        gap = random.uniform(10, 25)
-        print(f"  等待 {gap:.0f}s 后抓下一个...\n")
+        # 详情页间隔
+        gap = random.uniform(dg_min, dg_max)
+        print(f"  等待 {gap:.1f}s 后抓下一个...\n")
         time.sleep(gap)
 
     # 最终保存（dirname 为空时回退到当前目录，与循环内/其它写文件处保持一致）
@@ -1723,12 +1874,435 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False,
     return 0
 
 
+def _load_screened_data(args):
+    """加载岗位数据，兼容列表和 jobs dict 格式"""
+    if not args.input:
+        print("❌ 请用 --input 指定已有岗位 JSON 文件")
+        sys.exit(1)
+    with open(args.input, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "jobs" in data:
+        return data.get("jobs", [])
+    if isinstance(data, list):
+        return data
+    print("❌ JSON 格式不支持，需要 jobs 列表或含 jobs 键的字典")
+    sys.exit(1)
+
+
+def _resolve_ai_key(args):
+    """解析 AI API Key：CLI 参数 > 环境变量 > 持久化配置"""
+    if args.ai_key:
+        return args.ai_key
+    if args.ai_provider == "claude":
+        key = os.environ.get("CLAUDE_API_KEY", "")
+    else:
+        key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if key:
+        return key
+    # 回退到持久化配置
+    try:
+        from scripts.review_server import get_saved_ai_api_key
+        return get_saved_ai_api_key(args.ai_provider)
+    except ImportError:
+        return ""
+
+
+def _resolve_resume_text(args):
+    """解析简历文本：--resume-text 可以是内联文本或 .txt 文件路径；空则回退持久化配置"""
+    raw = (args.resume_text or "").strip()
+    if raw:
+        # 如果值是一个存在的文件路径，读取其内容
+        if os.path.isfile(raw):
+            try:
+                with open(raw, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    print(f"已从文件读取简历文本: {raw} ({len(content)} 字)")
+                    return content
+            except (OSError, UnicodeDecodeError) as e:
+                print(f"⚠️ 无法读取文件 {raw}: {e}，将作为内联文本处理")
+        return raw
+    # 回退到持久化配置
+    try:
+        from scripts.review_server import get_saved_config
+        cfg = get_saved_config()
+        txt = cfg.get("resume_text", "").strip()
+        if txt:
+            print(f"已从持久化配置读取简历文本 ({len(txt)} 字)")
+        return txt
+    except ImportError:
+        return ""
+
+
+def _resolve_saved_default(args, attr, config_key):
+    """CLI 参数 > 持久化配置回退"""
+    val = getattr(args, attr, None)
+    if val:
+        return val
+    try:
+        from scripts.review_server import get_saved_config
+        return get_saved_config().get(config_key, "")
+    except ImportError:
+        return ""
+
+
+def _split_list(s):
+    """分号/逗号/顿号/空白分隔 → 去空去重列表"""
+    parts = [x.strip() for x in re.split(r'[;；,，、\s]+', s) if x.strip()]
+    return list(dict.fromkeys(parts))  # 保序去重
+
+
+def _parse_gap(gap_str, default_min, default_max):
+    """解析 'min-max' 格式的间隔范围，如 '5-15' → (5.0, 15.0)"""
+    if not gap_str or gap_str.strip() == "":
+        return (float(default_min), float(default_max))
+    parts = gap_str.strip().split("-")
+    if len(parts) == 2:
+        try:
+            return (float(parts[0].strip()), float(parts[1].strip()))
+        except (ValueError, TypeError):
+            pass
+    return (float(default_min), float(default_max))
+
+
+
+def _run_ai_screen(args):
+    """AI 筛选模式：加载岗位 → AI 评分 → 输出结果"""
+    from scripts.ai_screener import AIScreener
+
+    jobs = _load_screened_data(args)
+    if not jobs:
+        print("❌ 没有岗位数据")
+        sys.exit(1)
+
+    # 读取简历文本：支持内联文本或 .txt 文件路径
+    resume_text = _resolve_resume_text(args)
+    if not resume_text:
+        print("❌ 请用 --resume-text 提供个人简历文本或 .txt 文件路径")
+        sys.exit(1)
+
+    api_key = _resolve_ai_key(args)
+    if not api_key:
+        print(f"❌ 未设置 {args.ai_provider.upper()} API Key，请用 --ai-key 或环境变量")
+        sys.exit(1)
+
+    # 模型和 base_url 从保存配置回退
+    ai_model = args.ai_model or ""
+    ai_base_url = args.ai_base_url or ""
+    if not ai_model or not ai_base_url:
+        try:
+            from scripts.review_server import get_saved_config
+            cfg = get_saved_config()
+            if not ai_model and args.ai_provider == "deepseek":
+                ai_model = cfg.get("deepseek_model", "")
+            elif not ai_model and args.ai_provider == "claude":
+                ai_model = cfg.get("claude_model", "")
+            if not ai_base_url and args.ai_provider == "deepseek":
+                ai_base_url = cfg.get("deepseek_base_url", "")
+            elif not ai_base_url and args.ai_provider == "claude":
+                ai_base_url = cfg.get("claude_base_url", "")
+        except ImportError:
+            pass
+
+    screener = AIScreener(
+        provider=args.ai_provider,
+        api_key=api_key,
+        model=ai_model,
+        base_url=ai_base_url,
+        score_threshold=args.score_threshold,
+    )
+
+    expect_salary = _resolve_saved_default(args, "expect_salary", "expect_salary")
+    custom_prompt = _resolve_saved_default(args, "custom_prompt", "custom_prompt")
+    extra_prompt = _resolve_saved_default(args, "extra_prompt", "extra_prompt")
+
+    print(f"\n=== AI 筛选 ({args.ai_provider}) ===")
+    print(f"岗位数: {len(jobs)} | 阈值: {args.score_threshold}分")
+    print()
+
+    screened = screener.screen_jobs_batch(
+        jobs,
+        resume_text=resume_text,
+        keywords=args.keyword,
+        salary_range=expect_salary or "",
+        custom_prompt=custom_prompt or "",
+        extra_prompt=extra_prompt or "",
+    )
+
+    matched = [j for j in screened if j.get("match")]
+    print(f"\n筛选完成: 匹配 {len(matched)} / {len(screened)}")
+
+    # 保存结果
+    output_path = args.output or default_output_path("screened", keyword=args.keyword)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "keyword": args.keyword,
+            "score_threshold": args.score_threshold,
+            "total": len(screened),
+            "matched": len(matched),
+            "screened_at": datetime.now().isoformat(),
+            "jobs": screened,
+        }, f, ensure_ascii=False, indent=2)
+    print(f"结果已保存: {output_path}")
+
+    # 启动审核页面
+    if args.review:
+        from scripts.review_server import ReviewServer
+        server = ReviewServer(
+            screened, cdp_port=args.cdp_port,
+            image_path=args.resume_image,
+            port=args.review_port,
+        )
+        server.start()
+    else:
+        print("\n--- 匹配岗位 ---")
+        for j in matched:
+            print(f"  [{j.get('score',0)}分] {j.get('name',j.get('title',''))} | {j.get('greeting','')[:40]}...")
+
+
+def _run_auto_send(args):
+    """自动发送模式：加载筛选结果 → 逐个投递"""
+    from scripts.boss_auto_sender import batch_send
+
+    jobs = _load_screened_data(args)
+    if not jobs:
+        print("❌ 没有岗位数据")
+        sys.exit(1)
+
+    # 只发送匹配且有招呼语的
+    to_send = [j for j in jobs if j.get("match") and j.get("greeting", "").strip()]
+    if not to_send:
+        print("❌ 没有可投递的岗位（需要 match=true 且招呼语非空）")
+        sys.exit(1)
+
+    print(f"\n=== 自动投递 {len(to_send)} 个岗位 ===")
+    print(f"简历图片: {args.resume_image or '无'}")
+
+    # 构建招呼语映射
+    greetings_map = {}
+    for j in to_send:
+        jid = j.get("id") or j.get("job_id", "")
+        if jid:
+            greetings_map[jid] = j.get("greeting", "")
+
+    cdp = CDPSession(args.cdp_port)
+    try:
+        results = batch_send(
+            cdp, to_send, greetings_map,
+            image_path=args.resume_image,
+        )
+        ok = sum(1 for r in results if r.get("success"))
+        print(f"\n投递完成: 成功 {ok} / {len(results)}")
+    finally:
+        cdp.close()
+
+
+def _run_ai_full(args):
+    """AI 全流程模式：抓取 → 详情 → AI筛选 → 审核 → 投递
+    支持城市×关键词遍历搜索（从持久化配置读取）"""
+    from scripts.ai_screener import AIScreener
+
+    resume_text = _resolve_resume_text(args)
+    if not resume_text:
+        print("❌ 请用 --resume-text 提供个人简历文本或 .txt 文件路径，或在控制台配置中填写")
+        sys.exit(1)
+
+    api_key = _resolve_ai_key(args)
+    if not api_key:
+        print(f"❌ 未设置 {args.ai_provider.upper()} API Key，请用 --ai-key 或环境变量或在控制台配置中填写")
+        sys.exit(1)
+
+    # 登录检测
+    print("检测登录状态...")
+    if not check_login_state(args.cdp_port):
+        print("❌ 未检测到 BOSS直聘登录状态。")
+        sys.exit(1)
+    print("✅ 已登录\n")
+
+    # 读取持久化配置
+    saved_cfg = {}
+    try:
+        from scripts.review_server import get_saved_config
+        saved_cfg = get_saved_config()
+    except ImportError:
+        pass
+
+    # 城市列表：CLI > 持久化配置 > 默认
+    city_raw = None
+    if args.city and args.city != DEFAULT_CITY_INPUT:
+        city_raw = args.city
+    else:
+        city_raw = saved_cfg.get("city", "").strip()
+    if not city_raw:
+        city_raw = DEFAULT_CITY_INPUT
+    cities = _split_list(city_raw)
+
+    # 关键词列表：CLI > 持久化配置 > 默认
+    kw_raw = args.keyword if args.keyword != "AI Agent" else ""
+    if not kw_raw:
+        kw_raw = saved_cfg.get("keywords", "").strip()
+    if not kw_raw:
+        kw_raw = args.keyword
+    keywords = _split_list(kw_raw)
+
+    combos = len(cities) * len(keywords)
+    print(f"搜索组合: {len(cities)} 城市 × {len(keywords)} 关键词 = {combos} 组")
+
+    # 间隔配置：CLI > 持久化 > 默认
+    detail_gap = args.detail_gap or saved_cfg.get("detail_gap", "") or "10-25"
+    load_gap = args.load_gap or saved_cfg.get("load_gap", "") or "5-10"
+    scroll_gap = args.scroll_gap or saved_cfg.get("scroll_gap", "") or "2-5"
+    page_gap = args.page_gap or saved_cfg.get("page_gap", "") or "12-22"
+
+    # 页数配置：CLI > 持久化 > 默认
+    pages = args.pages if args.pages != 3 else (saved_cfg.get("pages", 3) or 3)
+    page_size = args.page_size if args.page_size != 30 else (saved_cfg.get("page_size", 30) or 30)
+    if pages > MAX_PAGES:
+        pages = MAX_PAGES
+
+    # 1. 抓取列表（多城市×多关键词遍历去重）
+    filters = {}
+    for key in ["scale", "stage", "salary", "experience", "degree", "industry"]:
+        val = getattr(args, key)
+        if val:
+            filters[key] = val
+
+    all_jobs = []
+    seen_ids = set()
+    for city_name in cities:
+        city_display, city_code = resolve_city(city_name)
+        for kw in keywords:
+            print(f"\n--- 搜索: {kw} @ {city_display} ---")
+            import random
+            time.sleep(random.uniform(2, 5))
+            list_data = scrape_list(
+                kw, city_code, pages, filters, None,
+                cdp_port=args.cdp_port, fmt=args.format,
+                allow_dom_fallback=args.allow_dom_fallback,
+                page_gap=page_gap, page_size=page_size,
+            )
+            added = 0
+            for j in list_data.get("jobs", []):
+                jid = j.get("job_id", "")
+                if jid and jid not in seen_ids:
+                    seen_ids.add(jid)
+                    j["src_city_name"] = city_display
+                    j["src_city_code"] = city_code
+                    j["src_keyword"] = kw
+                    all_jobs.append(j)
+                    added += 1
+            print(f"  本组新增 {added}，累计 {len(all_jobs)}")
+
+    if not all_jobs:
+        print("❌ 未抓到任何岗位")
+        sys.exit(1)
+    print(f"\n抓取完成: {len(all_jobs)} 个去重岗位")
+
+    # 保存列表结果
+    list_output = args.output or default_output_path("jobs", city=city_raw, keyword=keywords[0] if keywords else "")
+    flush_jobs(list_output, {
+        "keyword": kw_raw,
+        "city": city_raw,
+        "filters": filters,
+        "scraped_at": datetime.now().isoformat(),
+    }, all_jobs)
+    print(f"列表已保存: {list_output}")
+
+    # 2. 抓详情
+    list_data = {"jobs": all_jobs}
+    details = None
+    jd_map = {}
+    if args.detail:
+        details = scrape_details(
+            list_data, args.max_details, args.detail_output,
+            cdp_port=args.cdp_port, fmt=args.format,
+            detail_gap=detail_gap,
+            load_gap=load_gap,
+            scroll_gap=scroll_gap,
+        )
+        if details:
+            for d in details:
+                jid = d.get("job_id", "")
+                jd = d.get("jd", "")
+                if jid and jd:
+                    jd_map[jid] = jd
+
+    # 3. AI 筛选
+    ai_model = args.ai_model or ""
+    ai_base_url = args.ai_base_url or ""
+    if not ai_model or not ai_base_url:
+        if args.ai_provider == "deepseek":
+            ai_model = ai_model or saved_cfg.get("deepseek_model", "")
+            ai_base_url = ai_base_url or saved_cfg.get("deepseek_base_url", "")
+        else:
+            ai_model = ai_model or saved_cfg.get("claude_model", "")
+            ai_base_url = ai_base_url or saved_cfg.get("claude_base_url", "")
+
+    screener = AIScreener(
+        provider=args.ai_provider,
+        api_key=api_key,
+        model=ai_model,
+        base_url=ai_base_url,
+        score_threshold=args.score_threshold,
+    )
+
+    expect_salary = _resolve_saved_default(args, "expect_salary", "expect_salary")
+    custom_prompt = _resolve_saved_default(args, "custom_prompt", "custom_prompt")
+    extra_prompt = _resolve_saved_default(args, "extra_prompt", "extra_prompt")
+
+    print(f"\n=== AI 筛选 ({args.ai_provider}) ===")
+    print(f"岗位数: {len(all_jobs)} | 阈值: {args.score_threshold}分\n")
+
+    screened = screener.screen_jobs_batch(
+        all_jobs,
+        resume_text=resume_text,
+        keywords=kw_raw,
+        salary_range=expect_salary or "",
+        jd_map=jd_map if details else None,
+        custom_prompt=custom_prompt or "",
+        extra_prompt=extra_prompt or "",
+    )
+
+    matched = [j for j in screened if j.get("match")]
+    print(f"\n筛选完成: 匹配 {len(matched)} / {len(screened)}")
+
+    # 4. 保存结果
+    output_path = args.output or default_output_path("screened", city=city_raw, keyword=keywords[0] if keywords else "")
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "keyword": args.keyword,
+            "city": args.city,
+            "score_threshold": args.score_threshold,
+            "total": len(screened),
+            "matched": len(matched),
+            "screened_at": datetime.now().isoformat(),
+            "jobs": screened,
+        }, f, ensure_ascii=False, indent=2)
+    print(f"结果已保存: {output_path}")
+
+    # 5. 启动审核页面
+    if args.review:
+        from scripts.review_server import ReviewServer
+        server = ReviewServer(
+            screened, cdp_port=args.cdp_port,
+            image_path=args.resume_image,
+            port=args.review_port,
+        )
+        server.start()
+    else:
+        print("\n--- 匹配岗位 ---")
+        for j in matched:
+            print(f"  [{j.get('score',0)}分] {j.get('name',j.get('title',''))} | {j.get('greeting','')[:50]}...")
+
+
 # ============================================================
 # main
 # ============================================================
 def main():
     p = argparse.ArgumentParser(
-        description=f"BOSS直聘抓取 + 分析 (CDP Raw) v{__version__}",
+        description=f"BOSS直聘抓取 + AI筛选 + 自动投递 (CDP Raw) v{__version__}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 筛选参数示例:
@@ -1745,26 +2319,20 @@ def main():
   # 基础搜索
   %(prog)s --keyword "Java 风控" --city 上海 --pages 5
 
-  # 筛选大公司 + 高薪
-  %(prog)s --keyword "Java 风控" --scale 305 --salary 406
+  # AI 筛选已有数据 + 审核确认
+  %(prog)s --ai-screen --input jobs.json --resume-text "个人简历..."
 
-  # 抓列表 + 详情 + 分析报告
-  %(prog)s --keyword "Java 风控" --pages 3 --detail --analysis
+  # AI 筛选已有数据（不启动审核页，直接输出结果）
+  %(prog)s --ai-screen --input jobs.json --resume-text "个人简历..." --no-review
 
-  # 只分析已有数据
-  %(prog)s --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260609_1200.json --analysis --no-detail
+  # 自动投递（从筛选结果）
+  %(prog)s --auto-send --input screened.json --resume-image resume.png
 
-  # 导出 CSV
-  %(prog)s --keyword "Java 风控" --pages 3 --format csv
-
-  # 合并旧数据
-  %(prog)s --keyword "Java 风控" --pages 3 --merge old_data.json
+  # 一键全流程：抓取 → AI筛选 → 审核 → 自动投递
+  %(prog)s --ai-full --keyword "Python" --city 上海 --pages 3 --resume-text "个人简历..."
 
   # 环境检查
   %(prog)s --check
-
-  # 浏览器/API smoke test
-  %(prog)s --smoke-test
 
   # 启动 Chrome CDP
   %(prog)s --setup-chrome
@@ -1773,6 +2341,7 @@ def main():
     p.add_argument("--keyword", default="AI Agent", help="搜索关键词")
     p.add_argument("--city", default=DEFAULT_CITY_INPUT, help=f"城市 (中文名或代码，默认 {DEFAULT_CITY_INPUT})")
     p.add_argument("--pages", type=int, default=3, help=f"抓取页数 (最大 {MAX_PAGES})")
+    p.add_argument("--page-size", type=int, default=30, help="每页职位数 (默认 30，最大 100)")
     p.add_argument("--output", default=None, help="列表数据输出路径")
     p.add_argument("--detail-output", default=None, help="详情数据输出路径")
     p.add_argument("--cdp-port", type=int, default=DEFAULT_CDP_PORT,
@@ -1798,6 +2367,45 @@ def main():
     p.add_argument("--input", default=None, help="从已有 JSON 文件读取（跳过抓取）")
     p.add_argument("--allow-dom-fallback", action="store_true",
                    help="API 无数据时允许降级 DOM 提取（薪资可能受字体反爬影响，默认关闭）")
+
+    # ====== AI 筛选参数 ======
+    p.add_argument("--ai-screen", action="store_true",
+                   help="使用 AI 对岗位评分 + 生成招呼语")
+    p.add_argument("--ai-full", action="store_true",
+                   help="一键全流程: 抓取 → AI筛选 → 审核 → 自动发送")
+    p.add_argument("--ai-provider", default="deepseek", choices=["deepseek", "claude"],
+                   help="AI 提供商 (默认 deepseek)")
+    p.add_argument("--ai-key", default=None,
+                   help="AI API Key（也可用环境变量 DEEPSEEK_API_KEY / CLAUDE_API_KEY）")
+    p.add_argument("--ai-model", default=None, help="AI 模型名称")
+    p.add_argument("--ai-base-url", default=None, help="AI API 自定义地址")
+    p.add_argument("--resume-text", default=None,
+                   help="个人简历/背景文本，或 .txt 文件路径（AI 筛选必填）")
+    p.add_argument("--resume-image", default=None,
+                   help="简历图片路径（投递时发送给 HR，可选）")
+    p.add_argument("--expect-salary", default=None, help="期望薪资范围 (如 20-35K)")
+    p.add_argument("--custom-prompt", default=None, help="自定义招呼语提示词")
+    p.add_argument("--extra-prompt", default=None, help="额外说明提示词")
+    p.add_argument("--score-threshold", type=int, default=60,
+                   help="AI 命中分数阈值 (默认 60)")
+    p.add_argument("--review", action="store_true", default=True, dest="review",
+                   help="AI 筛选后启动 Web 审核页面 (默认开启)")
+    p.add_argument("--no-review", action="store_false", dest="review",
+                   help="AI 筛选后不启动审核页，直接输出结果")
+    p.add_argument("--review-port", type=int, default=5200,
+                   help="审核页面端口 (默认 5200)")
+    p.add_argument("--detail-gap", default=None,
+                   help="详情页间隔秒数范围，如 5-15（默认 10-25）")
+    p.add_argument("--load-gap", default=None,
+                   help="页面加载等待秒数范围，如 3-8（默认 5-10）")
+    p.add_argument("--scroll-gap", default=None,
+                   help="模拟滚动停留秒数范围，如 1-3（默认 2-5）")
+    p.add_argument("--page-gap", default=None,
+                   help="翻页间隔秒数范围，如 8-20（默认 12-22）")
+
+    # ====== 自动发送参数 ======
+    p.add_argument("--auto-send", action="store_true",
+                   help="从筛选结果自动发送沟通消息")
 
     # 工具命令
     p.add_argument("--check", action="store_true", help="运行环境诊断检查")
@@ -1836,10 +2444,38 @@ def main():
     if not require_runtime_dependencies("requests", "websocket"):
         sys.exit(1)
 
-    # 页数限制
-    if args.pages > MAX_PAGES:
-        print(f"⚠️ 页数 {args.pages} 超过上限 {MAX_PAGES}，已自动调整为 {MAX_PAGES}")
-        args.pages = MAX_PAGES
+    # ====== 自动发送模式 ======
+    if args.auto_send:
+        _run_auto_send(args)
+        return
+
+    # ====== AI 全流程模式 ======
+    if args.ai_full:
+        _run_ai_full(args)
+        return
+
+    # ====== AI 筛选模式 ======
+    if args.ai_screen:
+        _run_ai_screen(args)
+        return
+
+    # ====== 原有抓取流程 ======
+    # 页数/页大小：CLI > 持久化 > 默认
+    pages = args.pages
+    page_size_val = args.page_size
+    if pages == 3 or page_size_val == 30:
+        try:
+            from scripts.review_server import get_saved_config
+            cfg = get_saved_config()
+            if pages == 3:
+                pages = cfg.get("pages", 3) or 3
+            if page_size_val == 30:
+                page_size_val = cfg.get("page_size", 30) or 30
+        except ImportError:
+            pass
+    if pages > MAX_PAGES:
+        print(f"⚠️ 页数 {pages} 超过上限 {MAX_PAGES}，已自动调整为 {MAX_PAGES}")
+        pages = MAX_PAGES
 
     # 收集筛选条件
     filters = {}
@@ -1863,9 +2499,11 @@ def main():
         print("✅ 已登录\n")
 
         list_data = scrape_list(
-            args.keyword, args.city, args.pages, filters, args.output,
+            args.keyword, args.city, pages, filters, args.output,
             cdp_port=args.cdp_port, fmt=args.format,
             allow_dom_fallback=args.allow_dom_fallback,
+            page_gap=_resolve_saved_default(args, "page_gap", "page_gap") or "12-22",
+            page_size=page_size_val,
         )
 
     # 合并外部文件
@@ -1894,9 +2532,28 @@ def main():
     # 抓详情
     details = None
     if args.detail and list_data.get("jobs"):
+        # 间隔从 CLI 或持久化配置读取
+        detail_gap_val = args.detail_gap or ""
+        load_gap_val = args.load_gap or ""
+        scroll_gap_val = args.scroll_gap or ""
+        if not detail_gap_val or not load_gap_val or not scroll_gap_val:
+            try:
+                from scripts.review_server import get_saved_config
+                cfg = get_saved_config()
+                detail_gap_val = detail_gap_val or cfg.get("detail_gap", "")
+                load_gap_val = load_gap_val or cfg.get("load_gap", "")
+                scroll_gap_val = scroll_gap_val or cfg.get("scroll_gap", "")
+            except ImportError:
+                pass
+        detail_gap_val = detail_gap_val or "10-25"
+        load_gap_val = load_gap_val or "5-10"
+        scroll_gap_val = scroll_gap_val or "2-5"
         details = scrape_details(
             list_data, args.max_details, args.detail_output,
             cdp_port=args.cdp_port, fmt=args.format,
+            detail_gap=detail_gap_val,
+            load_gap=load_gap_val,
+            scroll_gap=scroll_gap_val,
         )
         # 若处于合并流程，把旧详情并入本次抓取结果并重新落盘，保证 --merge 后详情不丢失
         if merged_details and args.detail_output:
