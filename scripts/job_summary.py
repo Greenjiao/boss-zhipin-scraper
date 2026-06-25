@@ -117,6 +117,45 @@ def term_appears_in_jd(term, jd_text):
     return normalized.lower() in jd_text.lower()
 
 
+# JD 正文里的页面噪音词黑名单：详情页 JD 夹带了"安全提示/竞争力分析/推荐栏/
+# 工商信息/微信扫码"等非职位内容，extract_tech_terms_from_jds 的停用词没覆盖，
+# 这里在 job_summary 层过滤，避免噪音污染摘要和提示词。
+JD_NOISE_TERMS = {
+    # 页面结构性词 / 推荐栏
+    "职位描述", "查看全部", "搜索", "更多职位", "看过该职位的", "人还看了",
+    "精选职位", "城市招聘", "热门职位", "推荐公司", "热门企业",
+    "公司介绍", "工作地址", "点击查看地图", "工商信息", "公司名称",
+    # 竞争力分析 / 评级碎句
+    "竞争力", "竞争力分析", "安全提示", "包括但不限于", "查看完整个人",
+    "个人综合排名", "在人中排名第", "你在", "位置", "微信扫码分享",
+    "良好", "优秀", "极好", "一般",
+    # BOSS 安全声明碎句（被中文分词切成 2-6 字片段）
+    "直聘严禁用人", "单位和招聘者", "用户做出任何", "损害求职者合",
+    "法权益的违法", "违规行为", "扣押求职者证", "收取求职者财",
+    "向求职者集资", "让求职者入股", "诱导求职者异", "地入职",
+    "异地参加培训", "违法违规使用", "求职者简历等", "您一旦发现此",
+    "类行为", "请立即举报",
+    # 工商信息字段
+    "法定代表人", "成立日期", "企业类型", "经营状态", "注册资金",
+    "有限责任公司", "存续", "举报",
+    # 常见地名/泛词（不是技能）
+    "上海", "北京", "深圳", "杭州", "广州", "成都", "南京", "苏州",
+    "工程师", "开发工程师", "研发工程师",
+}
+JD_NOISE_TERMS_EN = {"BOSS", "boss", "PDD", "https", "http", "www", "com", "cn"}
+
+
+def is_jd_noise_term(term):
+    """判断 JD 抽取出的词是否是页面噪音（非技能），应从摘要中剔除。"""
+    normalized = str(term or "").strip()
+    if not normalized:
+        return True
+    # 英文词走词形 + 黑名单
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9._+-]*", normalized):
+        return normalized.lower() in {w.lower() for w in JD_NOISE_TERMS_EN}
+    return normalized in JD_NOISE_TERMS
+
+
 def build_summary(jobs, details=None, search_keyword="", city="", top=10):
     details = filter_details_for_jobs(jobs, details or [])
 
@@ -181,6 +220,9 @@ def build_summary(jobs, details=None, search_keyword="", city="", top=10):
                     continue
                 normalized = str(term).strip()
                 key = normalized.lower()
+                # 跳过页面噪音词（安全声明/页脚/地名等），只保留真实技术词
+                if is_jd_noise_term(normalized):
+                    continue
                 if key and term_appears_in_jd(normalized, jd_text) and key not in seen_terms:
                     jd_terms[normalized] += 1
                     seen_terms.add(key)

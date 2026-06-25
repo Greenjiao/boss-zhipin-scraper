@@ -161,6 +161,39 @@ class JobSummaryTests(unittest.TestCase):
         self.assertNotIn("Go", terms)
         self.assertNotIn("AI", terms)
 
+    def test_jd_noise_terms_are_filtered(self):
+        """JD 正文夹带的页面噪音（安全声明/工商信息/推荐栏/地名）应被过滤，只留真实技能词。
+
+        回归:真实数据里 JD 高频词一度全是噪音（职位描述/直聘严禁用人/上海/工商信息等），
+        污染了摘要和提示词。job_summary 层维护黑名单剔除它们。
+        """
+        module = load_summary_module()
+        details = [
+            {
+                "skill_tags": [],
+                "jd": (
+                    "职位描述\n熟练使用 Python 和 LLM，熟悉 RAG\n"
+                    "BOSS 安全提示：直聘严禁用人单位和招聘者用户做出任何损害求职者合法权益\n"
+                    "工商信息 公司名称 法定代表人 注册资金\n"
+                    "精选职位 城市招聘 推荐公司\n"
+                    "工作地点：上海"
+                ),
+            },
+        ]
+
+        summary = module.build_summary([], details, search_keyword="Python")
+        terms = {term for term, _ in summary["jd_terms"]}
+
+        # 真实技能应保留
+        self.assertIn("Python", terms)
+        self.assertIn("LLM", terms)
+        self.assertIn("RAG", terms)
+        # 页面噪音应被全部过滤
+        for noise in ("职位描述", "安全提示", "直聘严禁用人", "工商信息",
+                      "公司名称", "法定代表人", "注册资金", "精选职位",
+                      "城市招聘", "推荐公司", "上海"):
+            self.assertNotIn(noise, terms, f"噪音词 {noise} 不应出现在 JD 高频词中")
+
     def test_explicit_details_path_does_not_fallback_to_latest(self):
         module = load_summary_module()
         with tempfile.TemporaryDirectory() as tmp:
