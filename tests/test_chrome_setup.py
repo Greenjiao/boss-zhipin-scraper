@@ -487,5 +487,39 @@ class VersionConsistencyTests(unittest.TestCase):
                          f"脚本({script_ver}) 与 README.md({readme_ver}) 版本不一致")
 
 
+class ProjectScopeTests(unittest.TestCase):
+    """项目边界守卫：只保留抓取和聚合分析，不内置简历匹配打分。"""
+
+    def _read_text(self, name):
+        return (ROOT_PATH / name).read_text(encoding="utf-8")
+
+    def test_resume_matching_feature_is_not_packaged_or_documented(self):
+        self.assertFalse(
+            (ROOT_PATH / "scripts" / "resume_score.py").exists(),
+            "简历匹配打分脚本不应作为项目功能保留",
+        )
+        self.assertFalse(
+            (ROOT_PATH / "tests" / "test_resume_score.py").exists(),
+            "删除简历匹配功能时也应删除对应测试",
+        )
+
+        combined = "\n".join(
+            self._read_text(name)
+            for name in ("README.md", "CHANGELOG.md", "SKILL.md", "pyproject.toml", "requirements.txt", "uv.lock")
+        )
+        for forbidden in (
+            "resume_score",
+            "pdfplumber",
+            "pypdf",
+            "python-docx",
+            "openai",
+            "langchain",
+            "sentence-transformers",
+            "简历匹配打分",
+            "enable-llm",
+        ):
+            self.assertNotIn(forbidden, combined)
+
+
 if __name__ == "__main__":
     unittest.main()

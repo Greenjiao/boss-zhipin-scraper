@@ -24,7 +24,7 @@ requires-dist = [
     { name = "websocket-client", specifier = ">=1.6.0,<2.0.0" },
     { name = "websocket-client", marker = "extra == 'all'", specifier = ">=1.6.0,<2.0.0" },
 ]
-provides-extras = ["csv", "all"]
+provides-extras = ["all"]
 
 [[package]]
 name = "certifi"

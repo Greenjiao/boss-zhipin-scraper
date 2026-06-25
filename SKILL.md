@@ -1,6 +1,6 @@
 ---
 name: boss-zhipin-scraper
-description: "Scrape BOSS直聘 (job listing site) via Chrome CDP. Searches jobs by keyword/city/filters, fetches JD details, and outputs structured JSON/CSV with plaintext salary. Use when user wants to search/analyze jobs on BOSS直聘 or zhipin.com."
+description: "Scrape BOSS直聘 (job listing site) via Chrome CDP. Searches jobs by keyword/city/filters, fetches JD details, outputs structured JSON/CSV with plaintext salary, and can summarize scraped results into a job-market prompt. Use when user wants to search/analyze jobs on BOSS直聘 or zhipin.com."
 version: 2.0.0
 author: eatmoreduck
 license: MIT
@@ -12,7 +12,7 @@ metadata:
 
 # BOSS直聘职位抓取工具 v2.0
 
-通过 Chrome CDP 协议抓取 BOSS直聘 (zhipin.com) 职位数据，输出结构化 JSON/CSV（含明文薪资）。
+通过 Chrome CDP 协议抓取 BOSS直聘 (zhipin.com) 职位数据，输出结构化 JSON/CSV（含明文薪资），并可对已抓取结果生成聚合摘要和求职材料优化提示词。
 
 ## 前置条件
 
@@ -22,7 +22,10 @@ metadata:
 
 ## 脚本位置
 
-本 skill 的脚本在 skill 目录下的 `scripts/boss_cdp_raw.py`。
+本 skill 的脚本在 skill 目录下：
+
+- `scripts/boss_cdp_raw.py`：抓取主脚本
+- `scripts/job_summary.py`：抓取后摘要和提示词脚本
 
 **运行任何命令前，必须先确定脚本的绝对路径。**
 
@@ -32,9 +35,11 @@ metadata:
 # 方法 1：已知 skill 安装目录（推荐，macOS/Linux 通用）
 SKILL_DIR="$(python3 -c "import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))" "$0")"
 SCRIPT_PATH="$SKILL_DIR/scripts/boss_cdp_raw.py"
+SUMMARY_PATH="$SKILL_DIR/scripts/job_summary.py"
 
 # 方法 2：搜索 hermes skills 目录
 SCRIPT_PATH=$(find ~/.hermes/skills -name "boss_cdp_raw.py" -type f 2>/dev/null | head -1)
+SUMMARY_PATH=$(find ~/.hermes/skills -name "job_summary.py" -type f 2>/dev/null | head -1)
 ```
 
 如果找不到脚本，说明 skill 未正确安装，需要重新安装。
@@ -104,6 +109,9 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --format cs
 # 带详情 + 分析报告
 python3 "$SCRIPT_PATH" --keyword "关键词" --city 城市 --pages 3 --detail --max-details 8 --analysis --format csv --output ~/.boss-zhipin-scraper/job-result/jobs.json
 
+# 抓取后摘要 + 求职材料优化提示词（默认读取最新抓取结果）
+python3 "$SUMMARY_PATH" --top 15
+
 # 真实浏览器/API smoke test（不写结果文件）
 python3 "$SCRIPT_PATH" --smoke-test --cdp-port 9222
 
@@ -112,6 +120,15 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 北京 --pages 3 --merge ~/.
 ```
 
 默认输出到 `~/.boss-zhipin-scraper/job-result/` 目录，`--format csv` 会给列表和详情都额外生成 `.csv` 文件。`--smoke-test` 只验证真实 Chrome/CDP 能否拿到 API 明文薪资，不写结果文件。
+
+摘要脚本只读取 `boss_jobs_*.json` 和 `boss_details_*.json`，不读取本地简历文件，不引入 PDF 依赖，也不给个人与岗位做分数判断。需要指定文件时使用：
+
+```bash
+python3 "$SUMMARY_PATH" \
+  --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
+  --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
+  --top 15
+```
 
 ## 参数速查
 
@@ -235,7 +252,9 @@ mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ```
 
 或克隆后手动复制：
@@ -245,4 +264,5 @@ git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
 cp boss-zhipin-scraper/SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp boss-zhipin-scraper/scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp boss-zhipin-scraper/scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 ```

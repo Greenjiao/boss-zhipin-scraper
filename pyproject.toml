@@ -22,7 +22,10 @@ all = [
 ]
 
 [project.scripts]
-boss-scraper = "boss_cdp_raw:main"
+# 模块路径对应 [tool.hatch.build.targets.wheel] 的 packages=["scripts"]，
+# 安装后顶层包名为 scripts，故入口是 scripts.boss_cdp_raw:main
+boss-scraper = "scripts.boss_cdp_raw:main"
+boss-summary = "scripts.job_summary:main"
 
 [build-system]
 requires = ["hatchling"]

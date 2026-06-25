@@ -15,6 +15,9 @@
 - SKILL.md 脚本路径解析改用 Python `os.path.realpath`（macOS 自带 `readlink` 无 `-f`）
 
 ### 新增
+- `scripts/job_summary.py` 抓取后摘要脚本：读取已有 JSON，输出岗位聚合摘要和求职材料优化提示词
+- `boss-summary` 命令行入口，便于打包安装后直接运行摘要脚本
+- 抓取后摘要测试：覆盖 JSON 加载、聚合维度、提示词输出和项目边界
 - 版本号一致性测试：校验脚本、pyproject.toml、SKILL.md、README.md 四处版本同步
 - CONTRIBUTING.md 贡献指南
 

@@ -7,7 +7,7 @@
 
 通过 Chrome CDP 协议抓取 BOSS直聘职位数据的命令行工具 + Hermes Agent Skill。
 
-> 📌 **一句话介绍**：不用 Selenium/Playwright，直接通过 Chrome DevTools Protocol 连接本地已登录的 Chrome，复用真实登录态调搜索 API，输出含明文薪资的 JSON/CSV，并生成薪资分布和技能词频分析报告。
+> 📌 **一句话介绍**：不用 Selenium/Playwright，直接通过 Chrome DevTools Protocol 连接本地已登录的 Chrome，复用真实登录态调搜索 API，输出含明文薪资的 JSON/CSV，并生成薪资分布、技能词频和求职材料优化提示词。
 
 <!-- 建议在此放一张终端运行截图或 GIF 演示，转化率影响最大 -->
 <!-- 录好后把图片放到仓库内（如根目录 demo.gif，不要放 docs/ 因为已被 gitignore），再替换下面这行： -->
@@ -28,15 +28,19 @@ python3 scripts/boss_cdp_raw.py --setup-chrome
 
 # 3. 抓取 + 分析
 python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --analysis
+
+# 4. 抓取后生成聚合摘要 + 提示词（默认读取最新结果）
+python3 scripts/job_summary.py
 ```
 
-抓完直接拿到：薪资分布、经验要求、高频技能词、简历建议。
+抓完直接拿到：薪资分布、经验要求、高频技能词、求职材料优化提示词。提示词只基于岗位数据，不读取本地简历文件，也不给岗位算个人匹配分。
 
 ## ✨ 特性
 
 - 明文薪资（API 模式，绕过字体反爬）
 - JSON / CSV 双格式输出
 - 详情页 JD 抓取 + 技能分析
+- 抓取后聚合摘要 + 可复制提示词
 - 增量写入（异常退出不丢数据）
 - 一键环境检查 + 持久隔离 Chrome CDP profile
 - 多维筛选（规模、融资、薪资、经验、学历、行业）
@@ -57,6 +61,7 @@ cd boss-zhipin-scraper
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 ```
 
 ### 方式 2：curl 一键安装
@@ -68,7 +73,9 @@ mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ```
 
 ### 方式 3：hermes skills install（需网络直连 GitHub）
@@ -85,6 +92,7 @@ hermes skills install https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-
 # 检查文件是否存在
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ```
 
 安装后直接在 Hermes 对话中说"帮我搜一下 BOSS直聘 上上海的 AI Agent 岗位"。
@@ -112,6 +120,9 @@ python3 scripts/boss_cdp_raw.py --smoke-test
 
 # 4. 抓取
 python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
+
+# 5. 抓取后摘要和提示词
+python3 scripts/job_summary.py --top 15
 ```
 
 ## 参数
@@ -139,6 +150,32 @@ python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --f
 | `--cdp-port` | CDP 端口（默认 9222） |
 | `--scale/--salary/--experience/--degree` | 筛选条件 |
 
+## 抓取后摘要与提示词
+
+`scripts/job_summary.py` 只读取已抓取的 `boss_jobs_*.json` 和 `boss_details_*.json`，做简单聚合分析并生成一段可复制提示词。它不读取本地简历文件，不引入 PDF 依赖，也不给个人与岗位做分数判断。
+
+```bash
+# 读取默认结果目录下最新的 boss_jobs_*.json，并自动匹配同时间戳或最新详情文件
+python3 scripts/job_summary.py
+
+# 指定列表和详情文件
+python3 scripts/job_summary.py \
+  --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
+  --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
+  --top 15
+
+# 只输出提示词
+python3 scripts/job_summary.py --prompt-only
+```
+
+打包安装后也可以使用入口命令：
+
+```bash
+uv run boss-summary --top 15
+```
+
+摘要会覆盖这些维度：薪资区间、经验要求、学历要求、地区分布、高频公司、技能标签、JD 高频词。提示词会要求模型基于这些统计去做简历关键词补齐、项目经历改写方向和面试准备清单，但明确要求不要虚构经历。
+
 ## 文件结构
 
 ```
@@ -149,7 +186,8 @@ boss-zhipin-scraper/
 ├── LICENSE
 ├── pyproject.toml
 ├── scripts/
-│   └── boss_cdp_raw.py   # 主力脚本
+│   ├── boss_cdp_raw.py   # 抓取主脚本
+│   └── job_summary.py    # 抓取后摘要 + 提示词
 └── requirements.txt
 ```
 
